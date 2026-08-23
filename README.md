@@ -50,6 +50,20 @@
 | **Secret Vault** | 使用 Android Keystore、AES-GCM 与强生物识别保护 Provider、TTS、ASR、MCP 凭据 | 已实现 |
 | **跨会话与运行控制** | 按需读取其他会话，并在生成过程中追加指令、取消、继续或恢复任务 | 已实现 |
 
+## 实机界面
+
+<p align="center">
+  <a href="docs/img/system-assistant-ai-key.jpg"><img src="docs/img/system-assistant-ai-key.jpg" width="31%" alt="系统 AI 键悬浮对话" /></a>
+  <a href="docs/img/desktop-pet.jpg"><img src="docs/img/desktop-pet.jpg" width="31%" alt="第二用户桌宠设置" /></a>
+  <a href="docs/img/memory-dream.jpg"><img src="docs/img/memory-dream.jpg" width="31%" alt="记忆中心与 Dream" /></a>
+</p>
+
+<p align="center">
+  <sub>系统 AI 键悬浮对话　·　第二用户桌宠　·　记忆中心与 Dream</sub>
+</p>
+
+> 截图来自当前开发构建，具体界面可能随版本继续调整。点击图片可以查看原图。
+
 ---
 
 ## 不只在聊天页面
