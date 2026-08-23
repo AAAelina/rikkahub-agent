@@ -45,7 +45,7 @@
 | **系统 AI 键对话** | 通过 Android 系统助手入口、实体 AI 键或音量键快捷方式呼出悬浮对话 | 已实现，受 OEM 限制 |
 | **桌宠伴生助手** | 常驻桌面，支持短对话、动作状态、TTS、日记归档与安全任务转交 | 已实现 |
 | **QuickCapture** | 悬浮按钮截取全屏或框选区域，自动发送到固定助手或带草稿打开会话 | 已实现 |
-| **Dreaming-X** | 从权威记忆生成可审查、可纠正、带证据与版本的长期理解 | 实验性 |
+| **Dreaming-X** | 以独立 Experience Ledger 形成用户、助手与关系三画像，支持证据审查、纠正和助手自查 | 实验性 |
 | **Agent Learning Runtime** | 从任务结果形成有证据的候选经验，经 Shadow 与人工审核后作为上下文建议 | Shadow / 审核阶段 |
 | **Secret Vault** | 使用 Android Keystore、AES-GCM 与强生物识别保护 Provider、TTS、ASR、MCP 凭据 | 已实现 |
 | **跨会话与运行控制** | 按需读取其他会话，并在生成过程中追加指令、取消、继续或恢复任务 | 已实现 |
@@ -123,7 +123,7 @@ Owner Assistant 是这个 Fork 的核心。它不是一个临时获得更多工�
 
 ### 完整应用控制面
 
-Owner 控制面包含 **24 个工具族、158 个 Action**，覆盖：
+Owner 控制面包含 **24 个工具族、167 个 Action**，覆盖：
 
 - Assistant、Conversation、Provider、模型路由与 Secret Vault
 - TTS、ASR、Search、Web 与 Telegram Channel
@@ -138,25 +138,42 @@ Owner 控制面包含 **24 个工具族、158 个 Action**，覆盖：
 
 ## Dreaming-X
 
-Dreaming-X 不直接替换普通记忆。它从已有权威记忆生成一份有来源、可审查的派生理解，用于整理：
+Dreaming-X 是独立于普通 Memory 的离线认知层。它不替代原始聊天或已保存记忆，而是围绕“当前用户 × 当前助手”建立稳定的 `DreamPairScope`，把双方共同经历整理成可审查、可纠正、可重建的长期画像。
 
-- 用户与当前记忆作用域的 Profile Context
-- 正在进行的项目
-- 当前计划
-- 活跃约束
-- 其他长期上下文
+### 独立 Experience Ledger
 
-每条 Dream Claim 都保留置信度、证据元数据和版本历史。用户可以：
+Dream 不再由 `useGlobalMemory` 或 Memory Epoch 决定作用域和运行时钟。当前实现使用独立的 `dream_experiences` 与 `dream_experience_state`：
 
-- 查看 Dream 为什么形成某个判断。
-- 对比上一版摘要发生了什么变化。
-- Reject 错误理解并保留审计版本。
-- 通过 USER_REVIEWED 权威记忆提交纠正。
-- 清除派生 Dream 状态而不删除原始保存记忆。
-- 在 Generated、Shadow 与 Active 使用模式之间切换。
-- 设置网络、电量、充电、空闲时间、每日运行次数和 Token 预算。
+- 连续聊天回合通过 Conversation Episode Adapter 形成经历。
+- 已确认 Memory、Narrative Event、Insight 与 Theory 可作为普通来源接入。
+- 用户明确纠正或拒绝会立即退出相关 Claim，并写入高权重 Experience。
+- Ledger 保存稳定的来源引用、摘要与 Digest，不重复保存大段聊天正文。
+- 新经历出现时旧画像仍可使用，同时显示 Pending、Lag 与 Dream Debt。
 
-当前公开实现以私有助手作用域和全局记忆作用域为基础，仍处于实验性迭代阶段。相关实现位于 [memory/dreaming](app/src/main/java/me/rerere/rikkahub/memory/dreaming)。
+### 用户、助手与关系三画像
+
+一次 Dream Synthesis 会共同生成三部分 Pair Portrait：
+
+| 画像 | 内容 |
+| --- | --- |
+| `about_user` | 用户的长期特征、偏好、项目、计划与约束 |
+| `about_assistant` | 助手从共同经历中形成的 Learned Self Model，不覆盖用户配置的 Identity Kernel |
+| `about_relationship` | 双方的相处方式、共同经历、信任边界与关系变化 |
+
+每条 Claim 都带有 `subjectKind`、`profileSection`、`epistemicOrigin`、`contentType`、置信度、来源与版本信息。用户可以在记忆中心查看三张画像卡、证据与版本差异，并纠正或 Reject 错误理解。
+
+### 助手可以查看自己的 Dream
+
+当前助手会获得只读的 `dream_view` 工具，并自动限定到自己的 Pair Scope：
+
+- `summary`：三画像摘要、Profile Revision 与最近 Dream 时间。
+- `claims`：当前用户、助手与关系 Claims。
+- `recent`：最近吸收的 Experience 与画像变化。
+- `sources`：指定 Claim 的 Episode、Message 与来源引用。
+
+`dream_view` 同时返回 Pending Experience、Dream Debt 与 Lag，让助手知道是否还有未处理的经历。它不能查看其他助手的 Dream，也不能修改、删除或强制生成 Dream。
+
+Dream 使用独立模型入口，并继续复用 WorkManager、Lease、Retry、预算以及空闲/充电/网络条件。当前 Room Schema 为 v50；功能仍处于实验性迭代阶段。相关实现位于 [memory/dreaming](app/src/main/java/me/rerere/rikkahub/memory/dreaming)，只读接口见 [DreamIntrospectionTools.kt](app/src/main/java/me/rerere/rikkahub/memory/dreaming/runtime/DreamIntrospectionTools.kt)。
 
 ---
 
@@ -168,7 +185,7 @@ Agent Learning Runtime（ALR）负责学习“以后怎样把任务做得更好�
 
 | 系统 | 负责 | 不负责 |
 | --- | --- | --- |
-| Dreaming-X | 长期身份、个人记忆与关系上下文 | 自动生成任务执行权限 |
+| Dreaming-X | 用户画像、助手自我理解与关系上下文 | 自动生成任务执行权限 |
 | Agent Learning | 有证据的任务经验与上下文建议 | 改写个人记忆、系统提示词或工具权限 |
 
 ALR 的第一阶段支持：
@@ -188,7 +205,7 @@ ALR 的第一阶段支持：
 
 ### 跨会话读取
 
-Owner Assistant 可以在用户启用后列出、读取和搜索其他会话。读取是按命令、只读且临时的；原始消息不会因为工具调用被复制进长期记忆或普通工具结果。
+Owner Assistant 可以在用户启用后列出、读取和搜索其他会话。读取按命令执行，只允许受保护的本地来源，并受设备解锁、调用次数和文本长度限制；结果仅供当前任务使用，不会因此写入长期记忆或额外持久化。
 
 ### 实时运行干预
 
@@ -260,7 +277,7 @@ Owner Assistant 可以在用户启用后列出、读取和搜索其他会话。�
 
 | 项目 | 说明 |
 | --- | --- |
-| Dreaming-X | 实验性功能；派生状态可以重建，不替代原始记忆 |
+| Dreaming-X | 实验性功能；Pair Portrait 与 Experience 派生状态可以重建，不替代原始聊天和记忆 |
 | Agent Learning | 当前以 Shadow 与人工审核为主，Policy 注入默认关闭 |
 | 系统 AI 键 | 不同 OEM 对系统助手、长按电源键和 AI 键的开放程度不同 |
 | MagicOS 快捷入口 | 可使用双音量键无障碍快捷服务；该服务不能读取窗口、执行手势或截图 |
