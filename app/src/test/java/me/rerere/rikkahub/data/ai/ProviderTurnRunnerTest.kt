@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.runBlocking
 import me.rerere.ai.core.MessageRole
+import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.ui.MessageChunk
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessageChoice
@@ -159,6 +160,50 @@ class ProviderTurnRunnerTest {
 
         assertEquals(0, progressEvents)
         assertEquals(listOf(ProviderAttemptTimingOutcome.COMPLETED), terminals)
+    }
+
+    @Test
+    fun `reasoning progress is distinct from first visible text and usage`() = runBlocking {
+        val events = mutableListOf<String>()
+
+        DefaultProviderTurnRunner(runControl = null).run(
+            ProviderTurnRequest(
+                stream = true,
+                streamCall = {
+                    flow {
+                        emit(reasoningChunk("reasoning", "thinking"))
+                        emit(
+                            textChunk("text", "answer").copy(
+                                usage = TokenUsage(promptTokens = 20, completionTokens = 5),
+                            ),
+                        )
+                    }
+                },
+                singleCall = { error("single call must not run") },
+                onChunk = {},
+                timingHook = object : ProviderTurnTimingHook {
+                    override fun onFirstMeaningfulProgress(
+                        attemptIndex: Int,
+                        kind: ProviderProgressKind,
+                    ) {
+                        events += "progress:$kind"
+                    }
+
+                    override fun onFirstTextProgress(attemptIndex: Int) {
+                        events += "text"
+                    }
+
+                    override fun onUsage(attemptIndex: Int, usage: TokenUsage) {
+                        events += "usage:${usage.completionTokens}"
+                    }
+                },
+            ),
+        )
+
+        assertEquals(
+            listOf("progress:STREAM_PROGRESS", "text", "usage:5"),
+            events,
+        )
     }
 
     @Test
@@ -666,6 +711,22 @@ class ProviderTurnRunnerTest {
                 delta = UIMessage(
                     role = MessageRole.ASSISTANT,
                     parts = listOf(UIMessagePart.Text(text)),
+                ),
+                message = null,
+                finishReason = null,
+            ),
+        ),
+    )
+
+    private fun reasoningChunk(id: String, text: String) = MessageChunk(
+        id = id,
+        model = "test-model",
+        choices = listOf(
+            UIMessageChoice(
+                index = 0,
+                delta = UIMessage(
+                    role = MessageRole.ASSISTANT,
+                    parts = listOf(UIMessagePart.Reasoning(text)),
                 ),
                 message = null,
                 finishReason = null,

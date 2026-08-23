@@ -8,10 +8,12 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.dao.DreamDao
+import me.rerere.rikkahub.data.db.dao.DreamExperienceDao
 import me.rerere.rikkahub.data.db.dao.DreamSynthesisDao
 import me.rerere.rikkahub.data.db.dao.MemoryDAO
 import me.rerere.rikkahub.data.db.dao.MemoryV2Dao
 import me.rerere.rikkahub.data.db.entity.DreamClaimEntity
+import me.rerere.rikkahub.data.db.entity.DreamClaimExperienceSourceEntity
 import me.rerere.rikkahub.data.db.entity.DreamClaimVersionEntity
 import me.rerere.rikkahub.data.db.entity.DreamClaimVersionSourceEntity
 import me.rerere.rikkahub.data.db.entity.DreamRunEntity
@@ -30,6 +32,7 @@ import me.rerere.rikkahub.memory.dreaming.input.DreamInputBudget
 import me.rerere.rikkahub.memory.dreaming.input.DreamInputBuildRequest
 import me.rerere.rikkahub.memory.dreaming.input.DreamInputCandidate
 import me.rerere.rikkahub.memory.dreaming.input.DreamInputCandidateOrigin
+import me.rerere.rikkahub.memory.dreaming.experience.toDreamInputCandidate
 import me.rerere.rikkahub.memory.dreaming.model.AuthorityChangeReason
 import me.rerere.rikkahub.memory.dreaming.model.AuthorityEntityKind
 import me.rerere.rikkahub.memory.dreaming.model.DreamAuthorityFingerprintV1
@@ -45,6 +48,7 @@ import me.rerere.rikkahub.memory.dreaming.model.DreamRunFailureCode
 import me.rerere.rikkahub.memory.dreaming.model.DreamRunMode
 import me.rerere.rikkahub.memory.dreaming.model.DreamRunStatus
 import me.rerere.rikkahub.memory.dreaming.model.DreamScopeId
+import me.rerere.rikkahub.memory.dreaming.model.DreamPairScopeId
 import me.rerere.rikkahub.memory.dreaming.model.DreamSha256
 import me.rerere.rikkahub.memory.dreaming.model.DreamStorageClass
 import me.rerere.rikkahub.memory.dreaming.model.DreamSupportType
@@ -60,6 +64,7 @@ import me.rerere.rikkahub.memory.dreaming.temporal.TemporalState
 class RoomDreamSynthesisStore(
     private val database: AppDatabase,
     private val dreamDao: DreamDao,
+    private val experienceDao: DreamExperienceDao,
     private val synthesisDao: DreamSynthesisDao,
     private val memoryDao: MemoryDAO,
     private val memoryV2Dao: MemoryV2Dao,
@@ -72,18 +77,36 @@ class RoomDreamSynthesisStore(
         if (!generationEnabled(request.scopeId)) {
             return BeginDreamSynthesisResult.Rejected(DreamSynthesisStoreRejection.FEATURE_DISABLED)
         }
+        if (DreamPairScopeId.parseOrNull(request.scopeId.value) != null) {
+            return beginPair(request)
+        }
         return database.withTransaction {
             val initial = observerStore.ensureScopeState(request.scopeId, request.attemptNowEpochMs)
             val stateBefore = dreamDao.getScopeState(request.scopeId.value)
                 ?: return@withTransaction BeginDreamSynthesisResult.Rejected(
                     DreamSynthesisStoreRejection.STORE_CORRUPTION,
                 )
-            if (initial.memoryEpoch != stateBefore.memoryEpoch) {
+            val pairStateBefore = DreamPairScopeId.parseOrNull(request.scopeId.value)?.let {
+                experienceDao.getState(request.scopeId.value)
+                    ?: return@withTransaction BeginDreamSynthesisResult.Rejected(
+                        DreamSynthesisStoreRejection.STORE_CORRUPTION,
+                    )
+            }
+            if (initial.memoryEpoch != stateBefore.memoryEpoch ||
+                (pairStateBefore != null && (
+                    stateBefore.memoryEpoch != pairStateBefore.experienceEpoch ||
+                        stateBefore.observerCheckpointEpoch != pairStateBefore.observerCheckpointEpoch ||
+                        stateBefore.lastAppliedMemoryEpoch != pairStateBefore.appliedExperienceEpoch ||
+                        stateBefore.dreamStateRevision != pairStateBefore.profileRevision ||
+                        stateBefore.activeSnapshotId != pairStateBefore.activeSnapshotId
+                    ))
+            ) {
                 return@withTransaction BeginDreamSynthesisResult.Rejected(
                     DreamSynthesisStoreRejection.STORE_CORRUPTION,
                 )
             }
-            val effectiveMode = if (stateBefore.lastAppliedMemoryEpoch == 0L) {
+            val appliedEpoch = pairStateBefore?.appliedExperienceEpoch ?: stateBefore.lastAppliedMemoryEpoch
+            val effectiveMode = if (appliedEpoch == 0L) {
                 DreamSynthesisMode.FULL
             } else {
                 request.mode
@@ -133,10 +156,12 @@ class RoomDreamSynthesisStore(
                             scopeId = request.scopeId,
                             runId = request.runId,
                             leaseOwner = request.leaseOwner,
-                            baseMemoryEpoch = run.baseMemoryEpoch,
-                            baseLastAppliedMemoryEpoch = state.lastAppliedMemoryEpoch,
-                            baseDreamRevision = run.baseDreamRevision,
-                            expectedActiveSnapshotId = state.activeSnapshotId,
+                            baseMemoryEpoch = pairStateBefore?.experienceEpoch ?: run.baseMemoryEpoch,
+                            baseLastAppliedMemoryEpoch = pairStateBefore?.appliedExperienceEpoch
+                                ?: state.lastAppliedMemoryEpoch,
+                            baseDreamRevision = pairStateBefore?.profileRevision ?: run.baseDreamRevision,
+                            expectedActiveSnapshotId = pairStateBefore?.activeSnapshotId
+                                ?: state.activeSnapshotId,
                             frozenNowEpochMs = run.startedAtMs,
                             sourceTimezoneId = run.sourceTimezoneId,
                             mode = effectiveMode,
@@ -146,6 +171,130 @@ class RoomDreamSynthesisStore(
             }
         }
     }
+
+    private suspend fun beginPair(request: BeginDreamSynthesisRequest): BeginDreamSynthesisResult =
+        database.withTransaction {
+            val state = experienceDao.getState(request.scopeId.value)
+                ?: return@withTransaction BeginDreamSynthesisResult.Rejected(
+                    DreamSynthesisStoreRejection.STORE_CORRUPTION,
+                )
+            val run = dreamDao.getRunById(request.runId)
+                ?: return@withTransaction BeginDreamSynthesisResult.Rejected(
+                    DreamSynthesisStoreRejection.RUN_NOT_FOUND,
+                )
+            if (run.scopeId != request.scopeId.value) {
+                return@withTransaction BeginDreamSynthesisResult.Rejected(
+                    DreamSynthesisStoreRejection.SCOPE_MISMATCH,
+                )
+            }
+            val status = runCatching { DreamRunStatus.valueOf(run.status) }.getOrNull()
+                ?: return@withTransaction BeginDreamSynthesisResult.Rejected(
+                    DreamSynthesisStoreRejection.STORE_CORRUPTION,
+                )
+            if (status.isTerminal) {
+                return@withTransaction BeginDreamSynthesisResult.Terminal(
+                    succeeded = status == DreamRunStatus.SUCCEEDED,
+                )
+            }
+            val effectiveMode = if (state.appliedExperienceEpoch == 0L) {
+                DreamSynthesisMode.FULL
+            } else {
+                request.mode
+            }
+            if (run.mode != effectiveMode.toRunMode().name) {
+                return@withTransaction BeginDreamSynthesisResult.Rejected(
+                    DreamSynthesisStoreRejection.FENCE_CONFLICT,
+                )
+            }
+            val leaseUntilMs = runCatching {
+                Math.addExact(request.attemptNowEpochMs, DREAM_SYNTHESIS_INITIAL_LEASE_MS)
+            }.getOrNull() ?: return@withTransaction BeginDreamSynthesisResult.Rejected(
+                DreamSynthesisStoreRejection.STORE_CORRUPTION,
+            )
+            when (status) {
+                DreamRunStatus.PENDING -> {
+                    if (experienceDao.acquireLease(
+                            pairScopeId = request.scopeId.value,
+                            runId = request.runId,
+                            leaseUntilMs = leaseUntilMs,
+                            nowMs = request.attemptNowEpochMs,
+                            reasonCode = AuthorityChangeReason.RUN_CLAIMED.name,
+                        ) != 1
+                    ) {
+                        return@withTransaction BeginDreamSynthesisResult.Rejected(
+                            DreamSynthesisStoreRejection.FENCE_CONFLICT,
+                        )
+                    }
+                    if (experienceDao.startRunMirror(
+                            runId = request.runId,
+                            pairScopeId = request.scopeId.value,
+                            baseExperienceEpoch = state.experienceEpoch,
+                            baseObserverCheckpointEpoch = state.observerCheckpointEpoch,
+                            baseProfileRevision = state.profileRevision,
+                            leaseOwner = request.leaseOwner,
+                            leaseUntilMs = leaseUntilMs,
+                            nowMs = request.attemptNowEpochMs,
+                            sourceTimezoneId = request.sourceTimezoneId,
+                        ) != 1
+                    ) {
+                        experienceDao.releaseLease(
+                            pairScopeId = request.scopeId.value,
+                            runId = request.runId,
+                            nowMs = request.attemptNowEpochMs,
+                            reasonCode = AuthorityChangeReason.RUN_FINISHED.name,
+                        )
+                        return@withTransaction BeginDreamSynthesisResult.Rejected(
+                            DreamSynthesisStoreRejection.FENCE_CONFLICT,
+                        )
+                    }
+                }
+
+                DreamRunStatus.RUNNING -> {
+                    if (run.leaseOwner != request.leaseOwner || run.leaseUntilMs == null ||
+                        run.leaseUntilMs <= request.attemptNowEpochMs ||
+                        state.activeRunId != run.runId || state.activeRunLeaseUntilMs != run.leaseUntilMs
+                    ) {
+                        return@withTransaction BeginDreamSynthesisResult.Rejected(
+                            DreamSynthesisStoreRejection.FENCE_CONFLICT,
+                        )
+                    }
+                }
+
+                else -> error("terminal Dream status handled above")
+            }
+            val startedRun = dreamDao.getRunById(request.runId)
+                ?: return@withTransaction BeginDreamSynthesisResult.Rejected(
+                    DreamSynthesisStoreRejection.RUN_NOT_FOUND,
+                )
+            val startedState = experienceDao.getState(request.scopeId.value)
+                ?: return@withTransaction BeginDreamSynthesisResult.Rejected(
+                    DreamSynthesisStoreRejection.STORE_CORRUPTION,
+                )
+            if (startedRun.status != DreamRunStatus.RUNNING.name ||
+                startedRun.leaseOwner != request.leaseOwner || startedRun.startedAtMs == null ||
+                startedRun.sourceTimezoneId != request.sourceTimezoneId ||
+                startedState.activeRunId != request.runId ||
+                startedState.activeRunLeaseUntilMs != startedRun.leaseUntilMs
+            ) {
+                return@withTransaction BeginDreamSynthesisResult.Rejected(
+                    DreamSynthesisStoreRejection.FENCE_CONFLICT,
+                )
+            }
+            BeginDreamSynthesisResult.Ready(
+                DreamSynthesisFence(
+                    scopeId = request.scopeId,
+                    runId = request.runId,
+                    leaseOwner = request.leaseOwner,
+                    baseMemoryEpoch = startedRun.baseMemoryEpoch,
+                    baseLastAppliedMemoryEpoch = state.appliedExperienceEpoch,
+                    baseDreamRevision = startedRun.baseDreamRevision,
+                    expectedActiveSnapshotId = state.activeSnapshotId,
+                    frozenNowEpochMs = startedRun.startedAtMs,
+                    sourceTimezoneId = startedRun.sourceTimezoneId,
+                    mode = effectiveMode,
+                ),
+            )
+        }
 
     override suspend fun readInputSeed(
         fence: DreamSynthesisFence,
@@ -160,6 +309,66 @@ class RoomDreamSynthesisStore(
                 is OwnedContextResult.Ready -> context.run
                 is OwnedContextResult.Rejected -> return@withTransaction ReadDreamInputSeedResult.Rejected(
                     context.storeReason,
+                )
+            }
+            if (DreamPairScopeId.parseOrNull(fence.scopeId.value) != null) {
+                val allClaims = loadClaims(fence.scopeId)
+                    ?: return@withTransaction ReadDreamInputSeedResult.Rejected(
+                        DreamSynthesisStoreRejection.STORE_CORRUPTION,
+                    )
+                val fromExclusive = if (fence.mode == DreamSynthesisMode.FULL) {
+                    0L
+                } else {
+                    fence.baseAppliedExperienceEpoch
+                }
+                val experiences = experienceDao.listExperiences(
+                    pairScopeId = fence.scopeId.value,
+                    afterExclusiveEpoch = fromExclusive,
+                    throughInclusiveEpoch = fence.baseExperienceEpoch,
+                    limit = MAX_DREAM_INPUT_CANDIDATES + 1,
+                )
+                if (experiences.size > MAX_DREAM_INPUT_CANDIDATES) {
+                    return@withTransaction ReadDreamInputSeedResult.Rejected(
+                        DreamSynthesisStoreRejection.STORE_CORRUPTION,
+                    )
+                }
+                val candidates = experiences.mapNotNull { experience ->
+                    experience.toDreamInputCandidate(
+                        scopeId = fence.scopeId,
+                        origin = if (fence.mode == DreamSynthesisMode.FULL) {
+                            DreamInputCandidateOrigin.FULL_REBUILD
+                        } else {
+                            DreamInputCandidateOrigin.AUTHORITY_CHANGE
+                        },
+                        json = json,
+                    )
+                }
+                val invalidations = deterministicInvalidations(allClaims, fence)
+                    ?: return@withTransaction ReadDreamInputSeedResult.Rejected(
+                        DreamSynthesisStoreRejection.STORE_CORRUPTION,
+                    )
+                if (owned.checkpointEpoch != fence.baseExperienceEpoch &&
+                    experienceDao.advanceRunCheckpoint(
+                        runId = fence.runId,
+                        pairScopeId = fence.scopeId.value,
+                        leaseOwner = fence.leaseOwner,
+                        expectedCheckpointEpoch = owned.checkpointEpoch,
+                        targetCheckpointEpoch = fence.baseExperienceEpoch,
+                        nowMs = attemptNowEpochMs,
+                    ) != 1
+                ) {
+                    return@withTransaction ReadDreamInputSeedResult.Rejected(
+                        DreamSynthesisStoreRejection.FENCE_CONFLICT,
+                    )
+                }
+                return@withTransaction ReadDreamInputSeedResult.Ready(
+                    DreamInputBuildRequest(
+                        fence = fence,
+                        candidates = candidates,
+                        currentClaims = allClaims,
+                        deterministicInvalidations = invalidations,
+                        budget = DREAM_SYNTHESIS_INPUT_BUDGET,
+                    ),
                 )
             }
             // A first FULL rebuild is the upgrade/bootstrap boundary. Its authority comes from the
@@ -277,6 +486,9 @@ class RoomDreamSynthesisStore(
         if (!generationEnabled(fence.scopeId)) {
             return DreamSynthesisStoreResult.Rejected(DreamSynthesisStoreRejection.FEATURE_DISABLED)
         }
+        if (DreamPairScopeId.parseOrNull(fence.scopeId.value) != null) {
+            return heartbeatPair(fence, nowMs, leaseDurationMs)
+        }
         return when (val result = observerStore.heartbeat(
             DreamRunLeaseRequest(
                 runId = fence.runId,
@@ -291,6 +503,41 @@ class RoomDreamSynthesisStore(
                 result.reason.toSynthesisRejection(),
             )
         }
+    }
+
+    private suspend fun heartbeatPair(
+        fence: DreamSynthesisFence,
+        nowMs: Long,
+        leaseDurationMs: Long,
+    ): DreamSynthesisStoreResult = try {
+        database.withTransaction {
+            when (val owned = ownedContext(fence, nowMs)) {
+                is OwnedContextResult.Rejected ->
+                    return@withTransaction DreamSynthesisStoreResult.Rejected(owned.storeReason)
+                is OwnedContextResult.Ready -> Unit
+            }
+            val leaseUntilMs = runCatching { Math.addExact(nowMs, leaseDurationMs) }
+                .getOrElse { throw PairLeaseAbort() }
+            if (experienceDao.heartbeatLease(
+                    pairScopeId = fence.scopeId.value,
+                    runId = fence.runId,
+                    leaseUntilMs = leaseUntilMs,
+                    nowMs = nowMs,
+                    reasonCode = AuthorityChangeReason.RUN_HEARTBEAT.name,
+                ) != 1
+            ) throw PairLeaseAbort()
+            if (experienceDao.heartbeatRunMirror(
+                    runId = fence.runId,
+                    pairScopeId = fence.scopeId.value,
+                    leaseOwner = fence.leaseOwner,
+                    leaseUntilMs = leaseUntilMs,
+                    nowMs = nowMs,
+                ) != 1
+            ) throw PairLeaseAbort()
+            DreamSynthesisStoreResult.Accepted
+        }
+    } catch (_: PairLeaseAbort) {
+        DreamSynthesisStoreResult.Rejected(DreamSynthesisStoreRejection.FENCE_CONFLICT)
     }
 
     override suspend fun markProviderDispatch(
@@ -450,23 +697,40 @@ class RoomDreamSynthesisStore(
         ) {
             abort(DreamSynthesisCommitRejection.LEASE_MISSING)
         }
-        if (synthesisDao.commitActiveSnapshotCas(
-                scopeId = fence.scopeId.value,
-                runId = fence.runId,
-                leaseOwner = fence.leaseOwner,
-                baseMemoryEpoch = fence.baseMemoryEpoch,
-                baseDreamRevision = fence.baseDreamRevision,
-                expectedLastAppliedMemoryEpoch = fence.baseLastAppliedMemoryEpoch,
-                expectedActiveSnapshotId = fence.expectedActiveSnapshotId,
-                newSnapshotId = snapshotId,
-                fullRebuildAtMs = request.committedAtEpochMs.takeIf {
-                    fence.mode == DreamSynthesisMode.FULL
-                },
-                reasonCode = SYNTHESIS_COMMIT_REASON,
+        if (DreamPairScopeId.parseOrNull(fence.scopeId.value) != null) {
+            if (experienceDao.advanceApplied(
+                pairScopeId = fence.scopeId.value,
+                expectedExperienceEpoch = fence.baseExperienceEpoch,
+                expectedAppliedEpoch = fence.baseAppliedExperienceEpoch,
+                targetEpoch = fence.baseExperienceEpoch,
+                expectedProfileRevision = fence.baseDreamRevision,
+                nextProfileRevision = nextDreamRevision,
+                activeSnapshotId = snapshotId,
+                remainingDebt = 0.0,
                 nowMs = request.committedAtEpochMs,
             ) != 1
-        ) {
-            abort(classifyCommitCas(fence, request.committedAtEpochMs))
+            ) {
+                abort(classifyCommitCas(fence, request.committedAtEpochMs))
+            }
+        } else {
+            if (synthesisDao.commitActiveSnapshotCas(
+                    scopeId = fence.scopeId.value,
+                    runId = fence.runId,
+                    leaseOwner = fence.leaseOwner,
+                    baseMemoryEpoch = fence.baseMemoryEpoch,
+                    baseDreamRevision = fence.baseDreamRevision,
+                    expectedLastAppliedMemoryEpoch = fence.baseLastAppliedMemoryEpoch,
+                    expectedActiveSnapshotId = fence.expectedActiveSnapshotId,
+                    newSnapshotId = snapshotId,
+                    fullRebuildAtMs = request.committedAtEpochMs.takeIf {
+                        fence.mode == DreamSynthesisMode.FULL
+                    },
+                    reasonCode = SYNTHESIS_COMMIT_REASON,
+                    nowMs = request.committedAtEpochMs,
+                ) != 1
+            ) {
+                abort(classifyCommitCas(fence, request.committedAtEpochMs))
+            }
         }
         finishCommittedSynthesisRun(fence, request.committedAtEpochMs)
         return DreamSynthesisCommitResult.Committed(snapshotId, nextDreamRevision)
@@ -478,6 +742,38 @@ class RoomDreamSynthesisStore(
      * without replaying that journal; every write remains inside the enclosing commit transaction.
      */
     private suspend fun finishCommittedSynthesisRun(fence: DreamSynthesisFence, nowMs: Long) {
+        if (DreamPairScopeId.parseOrNull(fence.scopeId.value) != null) {
+            val run = dreamDao.getRunById(fence.runId)
+                ?: abort(DreamSynthesisCommitRejection.STORE_CORRUPTION)
+            if (run.scopeId != fence.scopeId.value || run.mode != fence.mode.toRunMode().name ||
+                run.baseMemoryEpoch != fence.baseExperienceEpoch ||
+                run.baseDreamRevision != fence.baseDreamRevision ||
+                run.checkpointEpoch != fence.baseExperienceEpoch
+            ) {
+                abort(DreamSynthesisCommitRejection.STORE_CORRUPTION)
+            }
+            if (experienceDao.finishRunMirror(
+                    runId = fence.runId,
+                    pairScopeId = fence.scopeId.value,
+                    leaseOwner = fence.leaseOwner,
+                    terminalStatus = DreamRunStatus.SUCCEEDED.name,
+                    failureCode = null,
+                    nowMs = nowMs,
+                ) != 1
+            ) {
+                abort(DreamSynthesisCommitRejection.STORE_CORRUPTION)
+            }
+            if (experienceDao.releaseLease(
+                    pairScopeId = fence.scopeId.value,
+                    runId = fence.runId,
+                    nowMs = nowMs,
+                    reasonCode = AuthorityChangeReason.RUN_FINISHED.name,
+                ) != 1
+            ) {
+                abort(DreamSynthesisCommitRejection.STORE_CORRUPTION)
+            }
+            return
+        }
         if (fence.mode != DreamSynthesisMode.FULL) {
             val finished = observerStore.finish(
                 FinishDreamRunRequest(
@@ -601,6 +897,10 @@ class RoomDreamSynthesisStore(
                     claimKey = version.claimKey,
                     storageClass = version.storageClass.name,
                     epistemicType = version.epistemicType.name,
+                    subjectKind = version.subjectKind.name,
+                    profileSection = version.profileSection,
+                    epistemicOrigin = version.epistemicOrigin.name,
+                    contentType = version.contentType.name,
                     title = version.title,
                     statement = version.statement,
                     state = version.nextState.name,
@@ -643,21 +943,45 @@ class RoomDreamSynthesisStore(
                 createdAtMs = request.committedAtEpochMs,
             ),
         )
-        synthesisDao.insertClaimVersionSources(
-            version.sources.map { source ->
-                DreamClaimVersionSourceEntity(
-                    claimId = version.claimId,
-                    claimRevision = version.nextRevision,
-                    memoryId = source.authority.memoryId.toIntOrNull()
-                        ?: abort(DreamSynthesisCommitRejection.STORE_CORRUPTION),
-                    memoryRevision = source.authority.expectedRevision.toIntExactOrAbort(),
-                    memorySemanticHash = source.authority.expectedAuthorityFingerprint.value,
-                    memoryEvidenceId = null,
-                    supportType = source.supportType.name,
-                    createdAtMs = request.committedAtEpochMs,
-                )
-            },
-        )
+        if (DreamPairScopeId.parseOrNull(fence.scopeId.value) != null) {
+            synthesisDao.insertClaimExperienceSources(
+                version.sources.map { source ->
+                    val experience = experienceDao.getExperience(
+                        source.authority.memoryId,
+                        fence.scopeId.value,
+                    ) ?: abort(DreamSynthesisCommitRejection.EVIDENCE_TOMBSTONED)
+                    if (experience.experienceEpoch != source.authority.expectedRevision) {
+                        abort(DreamSynthesisCommitRejection.EVIDENCE_REVISION_MISMATCH)
+                    }
+                    DreamClaimExperienceSourceEntity(
+                        claimId = version.claimId,
+                        claimRevision = version.nextRevision,
+                        experienceId = experience.experienceId,
+                        experienceEpoch = experience.experienceEpoch,
+                        contentDigest = experience.contentDigest,
+                        sourceManifestHash = source.authority.expectedSourceManifestHash.value,
+                        supportType = source.supportType.name,
+                        createdAtMs = request.committedAtEpochMs,
+                    )
+                },
+            )
+        } else {
+            synthesisDao.insertClaimVersionSources(
+                version.sources.map { source ->
+                    DreamClaimVersionSourceEntity(
+                        claimId = version.claimId,
+                        claimRevision = version.nextRevision,
+                        memoryId = source.authority.memoryId.toIntOrNull()
+                            ?: abort(DreamSynthesisCommitRejection.STORE_CORRUPTION),
+                        memoryRevision = source.authority.expectedRevision.toIntExactOrAbort(),
+                        memorySemanticHash = source.authority.expectedAuthorityFingerprint.value,
+                        memoryEvidenceId = null,
+                        supportType = source.supportType.name,
+                        createdAtMs = request.committedAtEpochMs,
+                    )
+                },
+            )
+        }
     }
 
     private fun DreamValidatedClaimVersion.toEntity(
@@ -672,6 +996,10 @@ class RoomDreamSynthesisStore(
             claimKey = claimKey,
             storageClass = storageClass.name,
             epistemicType = epistemicType.name,
+            subjectKind = subjectKind.name,
+            profileSection = profileSection,
+            epistemicOrigin = epistemicOrigin.name,
+            contentType = contentType.name,
             title = title,
             statement = statement,
             state = nextState.name,
@@ -696,6 +1024,28 @@ class RoomDreamSynthesisStore(
     }
 
     private suspend fun validatePin(pin: DreamAuthorityPin, nowMs: Long) {
+        if (DreamPairScopeId.parseOrNull(pin.scopeId.value) != null) {
+            val experience = experienceDao.getExperience(pin.memoryId, pin.scopeId.value)
+                ?: abort(DreamSynthesisCommitRejection.EVIDENCE_TOMBSTONED)
+            if (experience.status == "DISCARDED") {
+                abort(DreamSynthesisCommitRejection.EVIDENCE_TOMBSTONED)
+            }
+            if (experience.experienceEpoch != pin.expectedRevision) {
+                abort(DreamSynthesisCommitRejection.EVIDENCE_REVISION_MISMATCH)
+            }
+            val projected = experience.toDreamInputCandidate(
+                scopeId = pin.scopeId,
+                origin = DreamInputCandidateOrigin.AUTHORITY_CHANGE,
+                json = json,
+            ) ?: abort(DreamSynthesisCommitRejection.STORE_CORRUPTION)
+            if (projected.pin.expectedAuthorityFingerprint != pin.expectedAuthorityFingerprint) {
+                abort(DreamSynthesisCommitRejection.EVIDENCE_FINGERPRINT_MISMATCH)
+            }
+            if (projected.pin.expectedSourceManifestHash != pin.expectedSourceManifestHash) {
+                abort(DreamSynthesisCommitRejection.EVIDENCE_SOURCE_MANIFEST_MISMATCH)
+            }
+            return
+        }
         val memoryId = pin.memoryId.toIntOrNull()
             ?: abort(DreamSynthesisCommitRejection.EVIDENCE_REVISION_MISMATCH)
         val memory = memoryDao.getMemoryById(memoryId, pin.scopeId.value)
@@ -729,6 +1079,14 @@ class RoomDreamSynthesisStore(
         if (pin.scopeId != scopeId) {
             abort(DreamSynthesisCommitRejection.EVIDENCE_SCOPE_MISMATCH)
         }
+        if (DreamPairScopeId.parseOrNull(scopeId.value) != null) {
+            val experience = experienceDao.getExperience(pin.memoryId, scopeId.value)
+                ?: abort(DreamSynthesisCommitRejection.EVIDENCE_REVISION_MISMATCH)
+            if (experience.experienceEpoch != pin.expectedRevision) {
+                abort(DreamSynthesisCommitRejection.EVIDENCE_REVISION_MISMATCH)
+            }
+            return
+        }
         val memoryId = pin.memoryId.toIntOrNull()
             ?: abort(DreamSynthesisCommitRejection.EVIDENCE_REVISION_MISMATCH)
         val revision = pin.expectedRevision
@@ -750,6 +1108,25 @@ class RoomDreamSynthesisStore(
         val state = enumOrNull<DreamClaimState>(state) ?: return null
         val sources = if (state == DreamClaimState.TOMBSTONED) {
             emptyList()
+        } else if (DreamPairScopeId.parseOrNull(scopeId.value) != null) {
+            synthesisDao.listClaimExperienceSources(claimId, claimRevision).map { source ->
+                val experience = experienceDao.getExperience(source.experienceId, scopeId.value)
+                    ?: return null
+                if (experience.experienceEpoch != source.experienceEpoch ||
+                    experience.contentDigest != source.contentDigest
+                ) return null
+                val candidate = experience.toDreamInputCandidate(
+                    scopeId = scopeId,
+                    origin = DreamInputCandidateOrigin.AUTHORITY_CHANGE,
+                    json = json,
+                ) ?: return null
+                if (candidate.pin.expectedSourceManifestHash.value != source.sourceManifestHash) return null
+                DreamClaimSourcePin(
+                    authority = candidate.pin,
+                    supportType = enumOrNull<DreamSupportType>(source.supportType) ?: return null,
+                    directAuthority = true,
+                )
+            }
         } else {
             synthesisDao.listClaimVersionSources(claimId, claimRevision).map { source ->
                 val revision = memoryV2Dao.findRevision(source.memoryId, source.memoryRevision, scopeId.value)
@@ -782,6 +1159,10 @@ class RoomDreamSynthesisStore(
                 claimKey = claimKey,
                 storageClass = enumValueOf<DreamStorageClass>(storageClass),
                 epistemicType = enumValueOf<DreamEpistemicType>(epistemicType),
+                subjectKind = enumValueOf(subjectKind),
+                profileSection = profileSection,
+                epistemicOrigin = enumValueOf(epistemicOrigin),
+                contentType = enumValueOf(contentType),
                 state = state,
                 title = title,
                 statement = statement,
@@ -827,6 +1208,27 @@ class RoomDreamSynthesisStore(
         source: DreamClaimSourcePin,
         fence: DreamSynthesisFence,
     ): DreamDeterministicInvalidationReason? {
+        if (DreamPairScopeId.parseOrNull(fence.scopeId.value) != null) {
+            val experience = experienceDao.getExperience(source.authority.memoryId, fence.scopeId.value)
+                ?: return DreamDeterministicInvalidationReason.SOURCE_MISSING
+            if (experience.status == "DISCARDED") {
+                return DreamDeterministicInvalidationReason.SOURCE_TOMBSTONED
+            }
+            if (experience.experienceEpoch != source.authority.expectedRevision) {
+                return DreamDeterministicInvalidationReason.SOURCE_REVISION_CHANGED
+            }
+            val projected = experience.toDreamInputCandidate(
+                scopeId = fence.scopeId,
+                origin = DreamInputCandidateOrigin.AUTHORITY_CHANGE,
+                json = json,
+            ) ?: return DreamDeterministicInvalidationReason.SOURCE_HASH_CHANGED
+            if (projected.pin.expectedAuthorityFingerprint != source.authority.expectedAuthorityFingerprint ||
+                projected.pin.expectedSourceManifestHash != source.authority.expectedSourceManifestHash
+            ) {
+                return DreamDeterministicInvalidationReason.SOURCE_HASH_CHANGED
+            }
+            return null
+        }
         val memoryId = source.authority.memoryId.toIntOrNull()
             ?: return DreamDeterministicInvalidationReason.SOURCE_MISSING
         val memory = memoryDao.getMemoryById(memoryId, fence.scopeId.value)
@@ -927,30 +1329,60 @@ class RoomDreamSynthesisStore(
             (expiresAtMs == null || expiresAtMs > nowMs)
 
     private suspend fun ownedContext(fence: DreamSynthesisFence, nowMs: Long): OwnedContextResult {
-        val state = dreamDao.getScopeState(fence.scopeId.value)
-            ?: return ownedRejected(
-                DreamSynthesisStoreRejection.RUN_NOT_FOUND,
-                DreamSynthesisCommitRejection.LEASE_MISSING,
+        val pairState = DreamPairScopeId.parseOrNull(fence.scopeId.value)?.let {
+            experienceDao.getState(fence.scopeId.value)
+                ?: return ownedRejected(
+                    DreamSynthesisStoreRejection.RUN_NOT_FOUND,
+                    DreamSynthesisCommitRejection.LEASE_MISSING,
+                )
+        }
+        val activeRunId: String?
+        val activeRunLeaseUntilMs: Long?
+        if (pairState != null) {
+            if (pairState.experienceEpoch != fence.baseExperienceEpoch) return ownedRejected(
+                DreamSynthesisStoreRejection.FENCE_CONFLICT,
+                DreamSynthesisCommitRejection.MEMORY_EPOCH_CONFLICT,
             )
-        if (state.memoryEpoch != fence.baseMemoryEpoch) return ownedRejected(
-            DreamSynthesisStoreRejection.FENCE_CONFLICT,
-            DreamSynthesisCommitRejection.MEMORY_EPOCH_CONFLICT,
-        )
-        if (state.lastAppliedMemoryEpoch != fence.baseLastAppliedMemoryEpoch ||
-            state.dreamStateRevision != fence.baseDreamRevision
-        ) return ownedRejected(
-            DreamSynthesisStoreRejection.FENCE_CONFLICT,
-            DreamSynthesisCommitRejection.DREAM_REVISION_CONFLICT,
-        )
-        if (state.activeSnapshotId != fence.expectedActiveSnapshotId) return ownedRejected(
-            DreamSynthesisStoreRejection.FENCE_CONFLICT,
-            DreamSynthesisCommitRejection.ACTIVE_SNAPSHOT_CONFLICT,
-        )
-        if (state.activeRunId != fence.runId || state.activeRunLeaseUntilMs == null) return ownedRejected(
+            if (pairState.appliedExperienceEpoch != fence.baseAppliedExperienceEpoch ||
+                pairState.profileRevision != fence.baseDreamRevision
+            ) return ownedRejected(
+                DreamSynthesisStoreRejection.FENCE_CONFLICT,
+                DreamSynthesisCommitRejection.DREAM_REVISION_CONFLICT,
+            )
+            if (pairState.activeSnapshotId != fence.expectedActiveSnapshotId) return ownedRejected(
+                DreamSynthesisStoreRejection.FENCE_CONFLICT,
+                DreamSynthesisCommitRejection.ACTIVE_SNAPSHOT_CONFLICT,
+            )
+            activeRunId = pairState.activeRunId
+            activeRunLeaseUntilMs = pairState.activeRunLeaseUntilMs
+        } else {
+            val state = dreamDao.getScopeState(fence.scopeId.value)
+                ?: return ownedRejected(
+                    DreamSynthesisStoreRejection.RUN_NOT_FOUND,
+                    DreamSynthesisCommitRejection.LEASE_MISSING,
+                )
+            if (state.memoryEpoch != fence.baseMemoryEpoch) return ownedRejected(
+                DreamSynthesisStoreRejection.FENCE_CONFLICT,
+                DreamSynthesisCommitRejection.MEMORY_EPOCH_CONFLICT,
+            )
+            if (state.lastAppliedMemoryEpoch != fence.baseLastAppliedMemoryEpoch ||
+                state.dreamStateRevision != fence.baseDreamRevision
+            ) return ownedRejected(
+                DreamSynthesisStoreRejection.FENCE_CONFLICT,
+                DreamSynthesisCommitRejection.DREAM_REVISION_CONFLICT,
+            )
+            if (state.activeSnapshotId != fence.expectedActiveSnapshotId) return ownedRejected(
+                DreamSynthesisStoreRejection.FENCE_CONFLICT,
+                DreamSynthesisCommitRejection.ACTIVE_SNAPSHOT_CONFLICT,
+            )
+            activeRunId = state.activeRunId
+            activeRunLeaseUntilMs = state.activeRunLeaseUntilMs
+        }
+        if (activeRunId != fence.runId || activeRunLeaseUntilMs == null) return ownedRejected(
             DreamSynthesisStoreRejection.FENCE_CONFLICT,
             DreamSynthesisCommitRejection.LEASE_MISSING,
         )
-        if (state.activeRunLeaseUntilMs <= nowMs) return ownedRejected(
+        if (activeRunLeaseUntilMs <= nowMs) return ownedRejected(
             DreamSynthesisStoreRejection.LEASE_EXPIRED,
             DreamSynthesisCommitRejection.LEASE_EXPIRED,
         )
@@ -970,7 +1402,7 @@ class RoomDreamSynthesisStore(
             DreamSynthesisStoreRejection.OWNER_MISMATCH,
             DreamSynthesisCommitRejection.LEASE_OWNER_MISMATCH,
         )
-        if (run.leaseUntilMs != state.activeRunLeaseUntilMs || run.leaseUntilMs <= nowMs) return ownedRejected(
+        if (run.leaseUntilMs != activeRunLeaseUntilMs || run.leaseUntilMs <= nowMs) return ownedRejected(
             DreamSynthesisStoreRejection.LEASE_EXPIRED,
             DreamSynthesisCommitRejection.LEASE_EXPIRED,
         )
@@ -1001,19 +1433,51 @@ class RoomDreamSynthesisStore(
         fence: DreamSynthesisFence,
         failureCode: DreamRunFailureCode,
         nowMs: Long,
-    ): DreamSynthesisStoreResult = when (val result = observerStore.fail(
-        FailDreamRunRequest(
-            runId = fence.runId,
-            scopeId = fence.scopeId,
-            leaseOwner = fence.leaseOwner,
-            failureCode = failureCode,
-            nowMs = nowMs,
-        ),
-    )) {
-        is FinishDreamRunResult.Finished -> DreamSynthesisStoreResult.Accepted
-        is FinishDreamRunResult.Rejected -> DreamSynthesisStoreResult.Rejected(
-            result.reason.toSynthesisRejection(),
-        )
+    ): DreamSynthesisStoreResult {
+        if (DreamPairScopeId.parseOrNull(fence.scopeId.value) != null) {
+            return try {
+                database.withTransaction {
+                    when (val owned = ownedContext(fence, nowMs)) {
+                        is OwnedContextResult.Rejected ->
+                            return@withTransaction DreamSynthesisStoreResult.Rejected(owned.storeReason)
+                        is OwnedContextResult.Ready -> Unit
+                    }
+                    if (experienceDao.finishRunMirror(
+                            runId = fence.runId,
+                            pairScopeId = fence.scopeId.value,
+                            leaseOwner = fence.leaseOwner,
+                            terminalStatus = DreamRunStatus.FAILED.name,
+                            failureCode = failureCode.name,
+                            nowMs = nowMs,
+                        ) != 1
+                    ) throw PairLeaseAbort()
+                    if (experienceDao.releaseLease(
+                            pairScopeId = fence.scopeId.value,
+                            runId = fence.runId,
+                            nowMs = nowMs,
+                            reasonCode = AuthorityChangeReason.RUN_FINISHED.name,
+                        ) != 1
+                    ) throw PairLeaseAbort()
+                    DreamSynthesisStoreResult.Accepted
+                }
+            } catch (_: PairLeaseAbort) {
+                DreamSynthesisStoreResult.Rejected(DreamSynthesisStoreRejection.FENCE_CONFLICT)
+            }
+        }
+        return when (val result = observerStore.fail(
+            FailDreamRunRequest(
+                runId = fence.runId,
+                scopeId = fence.scopeId,
+                leaseOwner = fence.leaseOwner,
+                failureCode = failureCode,
+                nowMs = nowMs,
+            ),
+        )) {
+            is FinishDreamRunResult.Finished -> DreamSynthesisStoreResult.Accepted
+            is FinishDreamRunResult.Rejected -> DreamSynthesisStoreResult.Rejected(
+                result.reason.toSynthesisRejection(),
+            )
+        }
     }
 
     private suspend fun generationEnabled(scopeId: DreamScopeId): Boolean {
@@ -1088,6 +1552,7 @@ private fun Long.toIntExactOrAbort(): Int {
 }
 
 private class CommitAbort(val reason: DreamSynthesisCommitRejection) : RuntimeException()
+private class PairLeaseAbort : RuntimeException()
 
 private fun abort(reason: DreamSynthesisCommitRejection): Nothing = throw CommitAbort(reason)
 

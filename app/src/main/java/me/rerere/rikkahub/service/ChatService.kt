@@ -592,6 +592,8 @@ class ChatService(
     private val memoryRetrievalDiagnostics: MemoryRetrievalDiagnosticsStore,
     private val agentTimingStore: AgentTimingStore,
     private val memoryV2Coordinator: me.rerere.rikkahub.memory.MemoryV2Coordinator,
+    private val dreamExperienceIngestor:
+        me.rerere.rikkahub.memory.dreaming.experience.DreamExperienceIngestor,
     private val generationHandler: GenerationHandler,
     private val templateTransformer: TemplateTransformer,
     private val providerManager: ProviderManager,
@@ -2023,7 +2025,12 @@ class ChatService(
                             )
                         }
                     }
-                    _generationDoneFlow.emit(conversationId)
+                    agentTiming?.mark(AgentTimingEventKind.GENERATION_DONE_NOTIFY_STARTED)
+                    try {
+                        _generationDoneFlow.emit(conversationId)
+                    } finally {
+                        agentTiming?.mark(AgentTimingEventKind.GENERATION_DONE_NOTIFY_FINISHED)
+                    }
                     return pending.takeIf { it.isNotEmpty() }
                         ?.let(RunOutcome::WaitingApproval)
                         ?: RunOutcome.Completed()
@@ -2115,7 +2122,12 @@ class ChatService(
                     }
                 }
             }
-            _generationDoneFlow.emit(conversationId)
+            agentTiming?.mark(AgentTimingEventKind.GENERATION_DONE_NOTIFY_STARTED)
+            try {
+                _generationDoneFlow.emit(conversationId)
+            } finally {
+                agentTiming?.mark(AgentTimingEventKind.GENERATION_DONE_NOTIFY_FINISHED)
+            }
             return pendingToolIds(conversationId).takeIf { it.isNotEmpty() }
                 ?.let { RunOutcome.WaitingApproval(it) }
                 ?: (getConversationFlow(conversationId).value.latestFinalAnswerFailure()?.let {
@@ -4208,6 +4220,25 @@ class ChatService(
             }.onFailure { error ->
                 Log.w(TAG, "Memory V2 capture failed after successful chat turn", error)
             }
+            runCatching {
+                dreamExperienceIngestor.ingestCompletedTurn(
+                    assistantId = assistant.id,
+                    conversationId = conversationId,
+                    userMessageId = userMessage.id,
+                    assistantMessageId = assistantMessage.id,
+                    userText = userText,
+                    assistantText = assistantText,
+                    memoryScopeId = scopeId,
+                    nowMs = System.currentTimeMillis(),
+                )
+                dreamExperienceIngestor.syncConfirmedMemories(
+                    assistantId = assistant.id,
+                    memoryScopeId = scopeId,
+                    nowMs = System.currentTimeMillis(),
+                )
+            }.onFailure { error ->
+                Log.w(TAG, "Dream experience ingest failed after successful chat turn", error)
+            }
         }
     }
 
@@ -4945,6 +4976,7 @@ class ChatService(
                     id = Uuid.random(),
                     messages = node.messages.map { message ->
                         message.copy(
+                            id = Uuid.random(),
                             parts = message.parts.map { part ->
                                 part.copyWithForkedFileUrl()
                             }

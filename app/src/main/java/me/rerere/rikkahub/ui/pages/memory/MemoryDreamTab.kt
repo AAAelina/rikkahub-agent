@@ -40,6 +40,7 @@ import me.rerere.hugeicons.HugeIcons
 import me.rerere.hugeicons.stroke.Moon02
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.memory.MemoryKind
+import me.rerere.rikkahub.memory.dreaming.model.DreamClaimState
 import me.rerere.rikkahub.memory.dreaming.review.DreamClaimDetail
 import me.rerere.rikkahub.memory.dreaming.review.DreamClaimMutationTarget
 import me.rerere.rikkahub.memory.dreaming.review.DreamClaimSummary
@@ -74,7 +75,20 @@ fun MemoryDreamTab(
             DreamStatusCard(projection)
         }
         if (projection != null) {
-            DreamSnapshotSection.entries.forEach { section ->
+            PAIR_PORTRAIT_SECTIONS.forEach { section ->
+                val sectionClaims = projection.claims.filter {
+                    it.section == section && it.state in CURRENT_PORTRAIT_STATES
+                }
+                item(key = "portrait_${section.name}") {
+                    DreamPortraitCard(
+                        section = section,
+                        claims = sectionClaims,
+                        projection = projection,
+                        onOpenClaim = onOpenClaim,
+                    )
+                }
+            }
+            DreamSnapshotSection.entries.filterNot(PAIR_PORTRAIT_SECTIONS::contains).forEach { section ->
                 val sectionClaims = projection.claims.filter { it.section == section }
                 if (sectionClaims.isNotEmpty()) {
                     item(key = "section_${section.name}") {
@@ -177,6 +191,41 @@ fun MemoryDreamTab(
 }
 
 @Composable
+private fun DreamPortraitCard(
+    section: DreamSnapshotSection,
+    claims: List<DreamClaimSummary>,
+    projection: DreamReviewProjection,
+    onOpenClaim: (DreamClaimMutationTarget) -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = section.title(),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            if (claims.isEmpty()) {
+                Text(
+                    text = stringResource(R.string.memory_dream_portrait_empty),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                claims.forEach { claim ->
+                    val target = remember(projection.fence, claim.claimId, claim.revision) {
+                        DreamClaimMutationTarget(projection.fence, claim.claimId, claim.revision)
+                    }
+                    DreamClaimCard(claim = claim, onClick = { onOpenClaim(target) })
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun DreamStatusCard(projection: DreamReviewProjection?) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
@@ -219,10 +268,12 @@ private fun DreamStatusCard(projection: DreamReviewProjection?) {
                 }
                 Text(
                     text = stringResource(
-                        R.string.memory_dream_epoch_summary,
+                        R.string.memory_dream_experience_summary,
                         projection.fence.expectedMemoryEpoch,
                         projection.fence.expectedLastAppliedMemoryEpoch,
                         projection.fence.expectedDreamRevision,
+                        projection.pendingExperienceCount,
+                        projection.experienceDebt,
                     ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -605,6 +656,9 @@ private fun DreamCorrectionDialog(
 
 @Composable
 private fun DreamSnapshotSection.title(): String = when (this) {
+    DreamSnapshotSection.ABOUT_USER -> "斯啾伊"
+    DreamSnapshotSection.ABOUT_ASSISTANT -> "七七"
+    DreamSnapshotSection.ABOUT_RELATIONSHIP -> "我们"
     DreamSnapshotSection.PROFILE -> stringResource(R.string.memory_dream_section_profile)
     DreamSnapshotSection.CURRENT_PROJECTS -> stringResource(R.string.memory_dream_section_projects)
     DreamSnapshotSection.ACTIVE_PLANS -> stringResource(R.string.memory_dream_section_plans)
@@ -636,6 +690,17 @@ private fun DreamSnapshotChangeType.title(): String = when (this) {
     DreamSnapshotChangeType.UPDATED -> stringResource(R.string.memory_dream_change_updated)
     DreamSnapshotChangeType.RETIRED -> stringResource(R.string.memory_dream_change_retired)
 }
+
+private val PAIR_PORTRAIT_SECTIONS = listOf(
+    DreamSnapshotSection.ABOUT_USER,
+    DreamSnapshotSection.ABOUT_ASSISTANT,
+    DreamSnapshotSection.ABOUT_RELATIONSHIP,
+)
+
+private val CURRENT_PORTRAIT_STATES = setOf(
+    DreamClaimState.ACTIVE_CONTEXTUAL,
+    DreamClaimState.PENDING_REVIEW,
+)
 
 private const val MAX_VISIBLE_DIFF_ROWS = 20
 private const val MAX_VISIBLE_RUNS = 10

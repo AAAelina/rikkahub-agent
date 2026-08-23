@@ -23,7 +23,7 @@ class DreamProposalParserTest {
             "```json\n```json\n${validNoOp()}\n```\n```" to DreamProposalParseFailure.INVALID_JSON,
             validNoOp().replaceFirst("{", "{\"extra\":1,") to DreamProposalParseFailure.UNKNOWN_FIELD,
             validNoOp().replace("\"INCREMENTAL\"", "\"incremental\"") to DreamProposalParseFailure.UNKNOWN_ENUM,
-            validNoOp().replace("\"schema_version\":1", "\"schema_version\":1,\"schema_\\u0076ersion\":1") to
+            validNoOp().replace("\"schema_version\":2", "\"schema_version\":2,\"schema_\\u0076ersion\":2") to
                 DreamProposalParseFailure.DUPLICATE_KEY,
         )
 
@@ -64,13 +64,15 @@ class DreamProposalParserTest {
 
     companion object {
         fun validNoOp(): String =
-            """{"schema_version":1,"proposal_nonce":"p_${"N".repeat(43)}","base_memory_epoch":7,"base_dream_revision":3,"mode":"INCREMENTAL","operations":[{"op":"NO_OP"}]}"""
+            """{"schema_version":2,"proposal_nonce":"p_${"N".repeat(43)}","base_experience_epoch":7,"base_dream_revision":3,"mode":"INCREMENTAL","operations":[{"op":"NO_OP"}]}"""
 
         fun validUpsert(
-            memoryToken: String = "m_${"A".repeat(22)}",
-            epistemicType: String = "PROJECT_STATE",
+            experienceToken: String = "m_${"A".repeat(22)}",
+            subjectKind: String = "USER",
+            epistemicOrigin: String = "EXPLICIT",
+            contentType: String = "PROJECT_STATE",
             temporalExpression: String = "null",
         ): String =
-            """{"schema_version":1,"proposal_nonce":"p_${"N".repeat(43)}","base_memory_epoch":7,"base_dream_revision":3,"mode":"INCREMENTAL","operations":[{"op":"UPSERT_CLAIM","target_claim_token":null,"expected_claim_revision":null,"claim":{"claim_key_hint":"project.offline","storage_class":"EPISODIC","epistemic_type":"$epistemicType","title":"Safe title","statement":"safe statement","temporal_expression":$temporalExpression,"evidence":[{"memory_token":"$memoryToken","expected_revision":2,"support_type":"SUPPORTS"}]}}]}"""
+            """{"schema_version":2,"proposal_nonce":"p_${"N".repeat(43)}","base_experience_epoch":7,"base_dream_revision":3,"mode":"INCREMENTAL","operations":[{"op":"UPSERT_CLAIM","target_claim_token":null,"expected_claim_revision":null,"claim":{"claim_key_hint":"project.offline","subject_kind":"$subjectKind","profile_section":"project","epistemic_origin":"$epistemicOrigin","content_type":"$contentType","title":"Safe title","statement":"safe statement","temporal_expression":$temporalExpression,"evidence":[{"experience_token":"$experienceToken","expected_epoch":2,"support_type":"SUPPORTS"}]}}]}"""
     }
 }

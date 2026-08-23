@@ -1,6 +1,7 @@
 package me.rerere.rikkahub.memory.dreaming.runtime
 
 import me.rerere.rikkahub.memory.dreaming.model.DREAM_SNAPSHOT_SCHEMA_VERSION
+import me.rerere.rikkahub.memory.dreaming.model.DreamPairScopeId
 import me.rerere.rikkahub.memory.dreaming.model.DreamScopeId
 import me.rerere.rikkahub.memory.dreaming.model.requireDreamStableId
 
@@ -45,7 +46,10 @@ object DreamRuntimeFenceValidator {
             ) {
                 add(DreamRuntimeFenceFailure.EPOCH_VALUE_INVALID)
             }
-            if (projection.sourceMemoryEpoch != projection.currentMemoryEpoch) {
+            val pairScope = DreamPairScopeId.parseOrNull(projection.scopeId.value) != null
+            if ((!pairScope && projection.sourceMemoryEpoch != projection.currentMemoryEpoch) ||
+                (pairScope && projection.sourceMemoryEpoch > projection.currentMemoryEpoch)
+            ) {
                 add(DreamRuntimeFenceFailure.MEMORY_EPOCH_MISMATCH)
             }
             if (projection.committedDreamRevision != projection.currentDreamRevision) {

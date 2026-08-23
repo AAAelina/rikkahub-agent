@@ -2,6 +2,7 @@ package me.rerere.rikkahub.memory.dreaming.runtime
 
 import me.rerere.rikkahub.memory.dreaming.model.DreamClaimState
 import me.rerere.rikkahub.memory.dreaming.model.DreamEpistemicType
+import me.rerere.rikkahub.memory.dreaming.model.DreamPairScopeId
 import me.rerere.rikkahub.memory.dreaming.model.DreamStorageClass
 import me.rerere.rikkahub.memory.dreaming.snapshot.DreamSnapshotSection
 import me.rerere.rikkahub.memory.dreaming.temporal.TemporalState
@@ -88,32 +89,37 @@ object DreamRuntimeSelector {
         if (snapshotState != DreamClaimState.ACTIVE_CONTEXTUAL) {
             return DreamRuntimeDropReason.SNAPSHOT_CLAIM_NOT_ACTIVE
         }
-        when (epistemicType) {
-            DreamEpistemicType.PREFERENCE_SUMMARY -> {
-                return DreamRuntimeDropReason.DERIVED_PREFERENCE_EXCLUDED
-            }
+        val pairScope = DreamPairScopeId.parseOrNull(scopeId.value) != null
+        if (pairScope) {
+            if (section !in PAIR_RUNTIME_SECTIONS) return DreamRuntimeDropReason.SECTION_NOT_ALLOWED
+        } else {
+            when (epistemicType) {
+                DreamEpistemicType.PREFERENCE_SUMMARY -> {
+                    return DreamRuntimeDropReason.DERIVED_PREFERENCE_EXCLUDED
+                }
 
-            DreamEpistemicType.BELIEF -> return DreamRuntimeDropReason.BELIEF_EXCLUDED
-            DreamEpistemicType.OBSERVATION -> {
-                return DreamRuntimeDropReason.EPISTEMIC_TYPE_UNSUPPORTED
-            }
+                DreamEpistemicType.BELIEF -> return DreamRuntimeDropReason.BELIEF_EXCLUDED
+                DreamEpistemicType.OBSERVATION -> {
+                    return DreamRuntimeDropReason.EPISTEMIC_TYPE_UNSUPPORTED
+                }
 
-            DreamEpistemicType.PROJECT_STATE,
-            DreamEpistemicType.PLAN,
-            DreamEpistemicType.CONSTRAINT,
-            -> Unit
+                DreamEpistemicType.PROJECT_STATE,
+                DreamEpistemicType.PLAN,
+                DreamEpistemicType.CONSTRAINT,
+                -> Unit
+            }
+            if (storageClass == DreamStorageClass.PROFILE) {
+                return DreamRuntimeDropReason.PROFILE_STORAGE_EXCLUDED
+            }
+            val expectedSection = when (epistemicType) {
+                DreamEpistemicType.PROJECT_STATE -> DreamSnapshotSection.CURRENT_PROJECTS
+                DreamEpistemicType.PLAN -> DreamSnapshotSection.ACTIVE_PLANS
+                DreamEpistemicType.CONSTRAINT -> DreamSnapshotSection.ACTIVE_CONSTRAINTS
+                else -> null
+            }
+            if (section !in RUNTIME_SECTIONS) return DreamRuntimeDropReason.SECTION_NOT_ALLOWED
+            if (section != expectedSection) return DreamRuntimeDropReason.SECTION_TYPE_MISMATCH
         }
-        if (storageClass == DreamStorageClass.PROFILE) {
-            return DreamRuntimeDropReason.PROFILE_STORAGE_EXCLUDED
-        }
-        val expectedSection = when (epistemicType) {
-            DreamEpistemicType.PROJECT_STATE -> DreamSnapshotSection.CURRENT_PROJECTS
-            DreamEpistemicType.PLAN -> DreamSnapshotSection.ACTIVE_PLANS
-            DreamEpistemicType.CONSTRAINT -> DreamSnapshotSection.ACTIVE_CONSTRAINTS
-            else -> null
-        }
-        if (section !in RUNTIME_SECTIONS) return DreamRuntimeDropReason.SECTION_NOT_ALLOWED
-        if (section != expectedSection) return DreamRuntimeDropReason.SECTION_TYPE_MISMATCH
         if (sourceFence.validatedAtEpochMs != frozenNowEpochMs) {
             return DreamRuntimeDropReason.SOURCE_CHECK_TIME_MISMATCH
         }
@@ -147,19 +153,23 @@ object DreamRuntimeSelector {
         if (validToEpochMs != null && validToEpochMs <= frozenNowEpochMs) {
             return DreamRuntimeDropReason.EXPIRED
         }
-        val temporalStateAllowed = when (epistemicType) {
-            DreamEpistemicType.PROJECT_STATE -> temporalState == TemporalState.CURRENT
-            DreamEpistemicType.PLAN -> temporalState in setOf(
-                TemporalState.CURRENT,
-                TemporalState.UPCOMING,
-            )
+        val temporalStateAllowed = if (pairScope) {
+            temporalState in setOf(TemporalState.CURRENT, TemporalState.TIMELESS, TemporalState.UPCOMING)
+        } else {
+            when (epistemicType) {
+                DreamEpistemicType.PROJECT_STATE -> temporalState == TemporalState.CURRENT
+                DreamEpistemicType.PLAN -> temporalState in setOf(
+                    TemporalState.CURRENT,
+                    TemporalState.UPCOMING,
+                )
 
-            DreamEpistemicType.CONSTRAINT -> temporalState in setOf(
-                TemporalState.CURRENT,
-                TemporalState.TIMELESS,
-            )
+                DreamEpistemicType.CONSTRAINT -> temporalState in setOf(
+                    TemporalState.CURRENT,
+                    TemporalState.TIMELESS,
+                )
 
-            else -> false
+                else -> false
+            }
         }
         if (!temporalStateAllowed) return DreamRuntimeDropReason.TEMPORAL_STATE_NOT_CURRENT
         if (!title.hasWellFormedUnicode() || !statement.hasWellFormedUnicode()) {
@@ -203,6 +213,11 @@ object DreamRuntimeSelector {
         DreamSnapshotSection.CURRENT_PROJECTS,
         DreamSnapshotSection.ACTIVE_PLANS,
         DreamSnapshotSection.ACTIVE_CONSTRAINTS,
+    )
+    private val PAIR_RUNTIME_SECTIONS = setOf(
+        DreamSnapshotSection.ABOUT_USER,
+        DreamSnapshotSection.ABOUT_ASSISTANT,
+        DreamSnapshotSection.ABOUT_RELATIONSHIP,
     )
     private const val MAX_RUNTIME_TITLE_CHARS = 4_096
     private const val MAX_RUNTIME_STATEMENT_CHARS = 32_000

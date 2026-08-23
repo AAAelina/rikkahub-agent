@@ -5,6 +5,8 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlinx.coroutines.runBlocking
 import me.rerere.rikkahub.data.db.dao.DreamDao
+import me.rerere.rikkahub.data.db.dao.DreamExperienceDao
+import me.rerere.rikkahub.data.db.entity.DreamExperienceStateEntity
 import me.rerere.rikkahub.data.db.entity.DreamRunEntity
 import me.rerere.rikkahub.data.db.entity.MemoryScopeChangeEntity
 import me.rerere.rikkahub.data.db.entity.MemoryScopeStateEntity
@@ -21,6 +23,7 @@ import org.junit.runner.RunWith
 class DreamDaoContractTest {
     private lateinit var db: AppDatabase
     private lateinit var dao: DreamDao
+    private lateinit var experienceDao: DreamExperienceDao
 
     @Before
     fun setUp() {
@@ -29,6 +32,7 @@ class DreamDaoContractTest {
             AppDatabase::class.java,
         ).build()
         dao = db.dreamDao()
+        experienceDao = db.dreamExperienceDao()
     }
 
     @After
@@ -446,9 +450,12 @@ class DreamDaoContractTest {
                 leaseUntilMs = 999,
             ),
         )
+        experienceDao.insertStateIfAbsent(
+            DreamExperienceStateEntity(pairScopeId = SCOPE, updatedAtMs = 150),
+        )
         dao.insertRun(run(id = "pending-observer", createdAtMs = 151))
         assertEquals("pending-synthesis", dao.findPendingOrRunningSynthesisRun(SCOPE)?.runId)
-        assertEquals(1L, dao.countPendingSynthesisRuns())
+        assertEquals(1L, dao.countPairPendingSynthesisRuns())
         assertEquals(
             SCOPE,
             dao.findSynthesisDirtyScopes(1).single().scopeId,

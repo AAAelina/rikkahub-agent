@@ -72,8 +72,10 @@ interface DreamSynthesisSchedulingStore : DreamDailyUsageStore {
         allowCreate: Boolean = true,
     ): EnsurePendingSynthesisRunResult
 
+    /** Pair-authoritative lifecycle reservations across every registered Pair scope. */
     suspend fun countGlobalPendingRuns(): Int
 
+    /** Pair-authoritative active executions across every registered Pair scope. */
     suspend fun countGlobalRunningRuns(): Int
 
     /** Terminalizes queued/running synthesis for this scope; Observer work is never touched. */
@@ -217,11 +219,15 @@ class DreamSynthesisCoordinator(
                     nowMs = now,
                     allowCreate = remainingNewRuns > 0L,
                     // Startup replaces a queued PENDING request so stale WorkManager backoff and
-                    // pre-upgrade attempt counters cannot delay durable recovery for hours. A
-                    // RUNNING provider call is still protected by schedule()'s running fence.
-                    // Cost changes likewise rebuild immutable Work constraints.
+                    // pre-upgrade attempt counters cannot delay durable recovery for hours. An
+                    // exact idle recheck must also replace the just-finishing Worker: otherwise
+                    // KEEP can discard its successor while the deferring Worker is still RUNNING,
+                    // then leave the durable PENDING row with no Work request. A RUNNING provider
+                    // call is still protected by schedule()'s running fence. Cost changes likewise
+                    // rebuild immutable Work constraints.
                     replaceExisting = reason == DreamSynthesisScanReason.STARTUP ||
-                        reason == DreamSynthesisScanReason.COST_POLICY_CHANGED,
+                        reason == DreamSynthesisScanReason.COST_POLICY_CHANGED ||
+                        reason == DreamSynthesisScanReason.APP_IDLE_RECHECK,
                     idleDeadlineAlreadyObserved =
                         reason == DreamSynthesisScanReason.APP_IDLE_RECHECK,
                 )) {

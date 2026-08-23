@@ -275,12 +275,13 @@ class DreamProposalValidator(
             }
         }
         val temporal = resolveTemporal(request, claim, evidence)
-        val requiresReview = claim.epistemicType in setOf(
-            DreamEpistemicType.BELIEF,
-            DreamEpistemicType.PREFERENCE_SUMMARY,
-        ) || textRisks.isNotEmpty() || hasInputRisk || temporal.state == TemporalState.UNKNOWN ||
+        val requiresReview = textRisks.isNotEmpty() || hasInputRisk || temporal.state == TemporalState.UNKNOWN ||
             claim.evidence.any { it.supportType == DreamSupportType.CONTRADICTS }
-        val confidence = if (requiresReview) 650 else 900
+        val confidence = when {
+            requiresReview -> 650
+            claim.epistemicOrigin == me.rerere.rikkahub.memory.dreaming.model.DreamEpistemicOrigin.INFERRED -> 750
+            else -> 900
+        }
         return DreamValidatedClaimVersion(
             claimId = claimId,
             expectedPreviousRevision = previous?.revision,
@@ -297,6 +298,10 @@ class DreamProposalValidator(
             validToEpochMs = temporal.validToEpochMs,
             sources = evidence,
             reason = reason,
+            subjectKind = claim.subjectKind,
+            profileSection = claim.profileSection,
+            epistemicOrigin = claim.epistemicOrigin,
+            contentType = claim.contentType,
         )
     }
 
@@ -417,6 +422,10 @@ class DreamProposalValidator(
             validToEpochMs = target.validToEpochMs,
             sources = target.sources,
             reason = reason,
+            subjectKind = target.subjectKind,
+            profileSection = target.profileSection,
+            epistemicOrigin = target.epistemicOrigin,
+            contentType = target.contentType,
         ),
     )
 

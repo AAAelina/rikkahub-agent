@@ -234,11 +234,15 @@ data class DreamReviewProjection(
     /** Canonically verified active-vs-superseded diff; corrupt inputs are explicitly Unavailable. */
     val snapshotDiff: DreamSnapshotDiffResult,
     val recentRuns: List<DreamRunUsageSummary>,
+    val pendingExperienceCount: Int = 0,
+    val experienceDebt: Double = 0.0,
 ) {
     init {
         require(claims.size <= DREAM_REVIEW_MAX_CLAIMS)
         require(recentRuns.size <= DREAM_REVIEW_MAX_RECENT_RUNS)
         require(claims.map(DreamClaimSummary::claimId).distinct().size == claims.size)
+        require(pendingExperienceCount >= 0)
+        require(experienceDebt >= 0.0)
     }
 }
 
@@ -409,6 +413,11 @@ sealed interface DreamCorrectionResult {
         val memoryId: Int,
         val memoryRevision: Int,
         val fence: DreamReviewFence,
+    ) : DreamCorrectionResult
+
+    /** Pair-Dream correction was recorded directly as an Experience, without creating Memory. */
+    data class PairApplied(
+        val experienceEpoch: Long,
     ) : DreamCorrectionResult
 
     data class AuthorityAppliedRebuildPending(

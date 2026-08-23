@@ -6,6 +6,7 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import kotlinx.coroutines.flow.Flow
 import me.rerere.rikkahub.data.db.entity.DreamClaimEntity
+import me.rerere.rikkahub.data.db.entity.DreamClaimExperienceSourceEntity
 import me.rerere.rikkahub.data.db.entity.DreamClaimVersionEntity
 import me.rerere.rikkahub.data.db.entity.DreamClaimVersionSourceEntity
 import me.rerere.rikkahub.data.db.entity.DreamSnapshotEntity
@@ -149,7 +150,9 @@ interface DreamSynthesisDao {
     @Query(
         "UPDATE dream_claims SET claim_revision = :nextClaimRevision, " +
             "claim_key = :claimKey, storage_class = :storageClass, " +
-            "epistemic_type = :epistemicType, title = :title, statement = :statement, " +
+            "epistemic_type = :epistemicType, subject_kind = :subjectKind, " +
+            "profile_section = :profileSection, epistemic_origin = :epistemicOrigin, " +
+            "content_type = :contentType, title = :title, statement = :statement, " +
             "state = :state, confidence = :confidence, temporal_state = :temporalState, " +
             "valid_from_ms = :validFromMs, valid_to_ms = :validToMs, " +
             "learned_at_ms = :learnedAtMs, source_timezone = :sourceTimezone, " +
@@ -172,6 +175,10 @@ interface DreamSynthesisDao {
         claimKey: String,
         storageClass: String,
         epistemicType: String,
+        subjectKind: String,
+        profileSection: String,
+        epistemicOrigin: String,
+        contentType: String,
         title: String,
         statement: String,
         state: String,
@@ -213,6 +220,9 @@ interface DreamSynthesisDao {
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertClaimVersionSources(sources: List<DreamClaimVersionSourceEntity>)
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertClaimExperienceSources(sources: List<DreamClaimExperienceSourceEntity>)
 
     @Query(
         "SELECT * FROM dream_claim_versions " +
@@ -256,6 +266,15 @@ interface DreamSynthesisDao {
         claimId: String,
         claimRevision: Long,
     ): List<DreamClaimVersionSourceEntity>
+
+    @Query(
+        "SELECT * FROM dream_claim_experience_sources WHERE claim_id = :claimId " +
+            "AND claim_revision = :claimRevision ORDER BY experience_epoch ASC, experience_id ASC, support_type ASC",
+    )
+    suspend fun listClaimExperienceSources(
+        claimId: String,
+        claimRevision: Long,
+    ): List<DreamClaimExperienceSourceEntity>
 
     @Query(
         "SELECT s.* FROM dream_claim_version_sources s " +
@@ -547,9 +566,12 @@ interface DreamSynthesisDao {
             "AND (validator_version IS NULL OR validator_version = :validatorVersion) " +
             "AND (input_memory_count IS NULL OR input_memory_count = :inputMemoryCount) " +
             "AND (input_manifest_hash IS NULL OR input_manifest_hash = :inputManifestHash) " +
-            "AND EXISTS (SELECT 1 FROM memory_scope_state s WHERE s.scope_id = :scopeId " +
+            "AND (EXISTS (SELECT 1 FROM memory_scope_state s WHERE s.scope_id = :scopeId " +
             "AND s.active_run_id = :runId AND s.active_run_lease_until_ms > :nowMs " +
-            "AND s.active_run_lease_until_ms = dream_runs.lease_until_ms)",
+            "AND s.active_run_lease_until_ms = dream_runs.lease_until_ms) OR " +
+            "EXISTS (SELECT 1 FROM dream_experience_state p WHERE p.pair_scope_id = :scopeId " +
+            "AND p.active_run_id = :runId AND p.active_run_lease_until_ms > :nowMs " +
+            "AND p.active_run_lease_until_ms = dream_runs.lease_until_ms))",
     )
     suspend fun markRunProviderDispatch(
         runId: String,
@@ -574,9 +596,12 @@ interface DreamSynthesisDao {
             "AND lease_owner = :leaseOwner AND lease_until_ms > :nowMs " +
             "AND :inputMemoryCount >= 0 AND (:inputTokens IS NULL OR :inputTokens >= 0) " +
             "AND :outputClaimCount >= 0 AND (:outputTokens IS NULL OR :outputTokens >= 0) " +
-            "AND EXISTS (SELECT 1 FROM memory_scope_state s WHERE s.scope_id = :scopeId " +
+            "AND (EXISTS (SELECT 1 FROM memory_scope_state s WHERE s.scope_id = :scopeId " +
             "AND s.active_run_id = :runId AND s.active_run_lease_until_ms > :nowMs " +
-            "AND s.active_run_lease_until_ms = dream_runs.lease_until_ms)",
+            "AND s.active_run_lease_until_ms = dream_runs.lease_until_ms) OR " +
+            "EXISTS (SELECT 1 FROM dream_experience_state p WHERE p.pair_scope_id = :scopeId " +
+            "AND p.active_run_id = :runId AND p.active_run_lease_until_ms > :nowMs " +
+            "AND p.active_run_lease_until_ms = dream_runs.lease_until_ms))",
     )
     suspend fun recordRunSynthesisAudit(
         runId: String,

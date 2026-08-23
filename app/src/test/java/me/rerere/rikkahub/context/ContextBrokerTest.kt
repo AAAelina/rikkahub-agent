@@ -132,6 +132,28 @@ class ContextBrokerTest {
     }
 
     @Test
+    fun `source diagnostics retain monotonic collection duration`() = runBlocking {
+        var clockNs = 100L
+        val broker = DefaultContextBroker(
+            readers = mapOf(
+                ContextSource.DEVICE_STATUS to ContextSourceReader { _, source ->
+                    ContextReadResult.Available(ContextFragment(source, "battery 80 percent"))
+                },
+            ),
+            elapsedRealtimeNanos = { clockNs.also { clockNs += 25L } },
+        )
+
+        val snapshot = broker.collect(
+            request().copy(allowedSources = setOf(ContextSource.DEVICE_STATUS)),
+        )
+
+        assertEquals(
+            ContextSourceTiming(ContextSource.DEVICE_STATUS, 25L),
+            snapshot.sourceTimings.single(),
+        )
+    }
+
+    @Test
     fun `volatile addendum escapes observed markup`() = runBlocking {
         val snapshot = ContextSnapshot(
             runId = "run",

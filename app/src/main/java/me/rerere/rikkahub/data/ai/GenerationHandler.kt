@@ -153,6 +153,7 @@ import me.rerere.rikkahub.toolcatalog.ToolCatalogSnapshot
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingEventKind
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingEventResult
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingHandle
+import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingResponseMode
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingRoundRef
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingToolRef
 import me.rerere.rikkahub.utils.applyPlaceholders
@@ -777,9 +778,14 @@ class GenerationHandler(
                 isSubAgent = isSubAgent,
             )
         }?.let { request ->
-            val snapshot = contextBroker.collect(request)
-            contextDiagnosticsStore.record(request, snapshot)
-            snapshot.toSystemAddendum()
+            agentTiming?.mark(AgentTimingEventKind.AUTO_CONTEXT_STARTED)
+            try {
+                val snapshot = contextBroker.collect(request)
+                contextDiagnosticsStore.record(request, snapshot)
+                snapshot.toSystemAddendum()
+            } finally {
+                agentTiming?.mark(AgentTimingEventKind.AUTO_CONTEXT_FINISHED)
+            }
         }
         var loopGuardTripCount = 0
         val recoveryCommandKey = commandId?.toString()
@@ -2735,6 +2741,21 @@ class GenerationHandler(
         agentTiming: AgentTimingHandle? = null,
         onTimingRoundReady: (AgentTimingRoundRef) -> Unit = {},
     ): GenerationTerminal {
+        val requestMode =
+            "${requestPurpose.name.lowercase()}:${if (stream) "stream" else "single"}"
+        // Create attempt 0 before long-context preparation starts. Otherwise these stages are
+        // counted in trace wall time but are absent from the per-round detail sheet.
+        val providerCallIndex = diagnosticHandle.nextProviderCallIndex()
+        val initialTimingRound = agentTiming?.beginRound(
+            providerCallIndex = providerCallIndex,
+            attemptIndex = 0,
+            responseMode = if (stream) {
+                AgentTimingResponseMode.STREAMING
+            } else {
+                AgentTimingResponseMode.NON_STREAMING
+            },
+            runtimeRunId = runControl?.runId,
+        )?.also(onTimingRoundReady)
         val sourceContext = contextMessages ?: messages
         // Explicit projections are already selected at a stable boundary. Selecting them again
         // after the live tool tail grows can slide that boundary and invalidate the provider
@@ -2742,6 +2763,7 @@ class GenerationHandler(
         val selectedContext = agentTiming.timedAgentStage(
             AgentTimingEventKind.CONTEXT_COMPRESSION_STARTED,
             AgentTimingEventKind.CONTEXT_COMPRESSION_FINISHED,
+            initialTimingRound,
         ) {
             contextMessages ?: messages.selectOrdinaryChatContext(assistant.contextMessageSize)
         }
@@ -2805,6 +2827,7 @@ class GenerationHandler(
         val breakdownRecentChatsPrompt = agentTiming.timedAgentStageSuspend(
             AgentTimingEventKind.RECENT_CHATS_STARTED,
             AgentTimingEventKind.RECENT_CHATS_FINISHED,
+            initialTimingRound,
         ) {
             if (requestPurpose == GenerationRequestPurpose.NORMAL && assistant.enableRecentChatsReference) {
                 buildRecentChatsPrompt(assistant, conversationRepo)
@@ -2813,6 +2836,7 @@ class GenerationHandler(
         val breakdownToolPrompts = agentTiming.timedAgentStage(
             AgentTimingEventKind.TOOL_PROMPT_STARTED,
             AgentTimingEventKind.TOOL_PROMPT_FINISHED,
+            initialTimingRound,
         ) {
             tools.map { tool -> tool.systemPrompt(model, messages) }
         }
@@ -2850,11 +2874,13 @@ class GenerationHandler(
         val layoutWithoutRecall = agentTiming.timedAgentStage(
             AgentTimingEventKind.SYSTEM_PROMPT_STARTED,
             AgentTimingEventKind.SYSTEM_PROMPT_FINISHED,
+            initialTimingRound,
         ) { createSystemPromptLayout(recallPrompt = "") }
         val requestTokenEstimator = ProviderRequestTokenEstimator()
         val recallPromptBudget = agentTiming.timedAgentStage(
             AgentTimingEventKind.TOKEN_COUNT_STARTED,
             AgentTimingEventKind.TOKEN_COUNT_FINISHED,
+            initialTimingRound,
         ) {
             contextPreparer.conservativeMemoryBudget(
                 resolvedWindow = resolvedContextWindow,
@@ -2871,7 +2897,7 @@ class GenerationHandler(
         } else {
             assistant.id.toString()
         }
-        val dreamScopeId = DreamScopeId.requireCanonical(memoryScopeId)
+        val dreamScopeId = DreamScopeId.pairScope(assistant.id)
         val dreamContext = DreamGenerationContextPlanner(
             featureFlags = dreamingFeatureFlags,
             projectionReader = dreamSnapshotProjectionReader,
@@ -3040,6 +3066,7 @@ class GenerationHandler(
         val baselineRecall = agentTiming.timedAgentStage(
             AgentTimingEventKind.MEMORY_PROMPT_STARTED,
             AgentTimingEventKind.MEMORY_PROMPT_FINISHED,
+            initialTimingRound,
         ) {
             compileRecallPrompt(
                 memory = if (assistant.enableMemory) memories else emptyList(),
@@ -3083,11 +3110,6 @@ class GenerationHandler(
             },
         )
         val breakdownMemoryPrompt = memoryCompileResult.text
-        val requestMode =
-            "${requestPurpose.name.lowercase()}:${if (stream) "stream" else "single"}"
-        // Allocate once before either hard gate. Overflow and success records for this attempted
-        // provider call must share one stable call index.
-        val providerCallIndex = diagnosticHandle.nextProviderCallIndex()
         val memoryDropReasonCounts = memoryCompileResult.dropped
             .groupingBy { drop -> drop.reason.name }
             .eachCount()
@@ -3143,6 +3165,7 @@ class GenerationHandler(
         val systemPromptLayout = agentTiming.timedAgentStage(
             AgentTimingEventKind.SYSTEM_PROMPT_STARTED,
             AgentTimingEventKind.SYSTEM_PROMPT_FINISHED,
+            initialTimingRound,
         ) {
             createSystemPromptLayout(
                 recallPrompt = baselineRecall.text,
@@ -3163,6 +3186,7 @@ class GenerationHandler(
             agentTiming.timedAgentStage(
                 AgentTimingEventKind.CONTEXT_GATE_INITIAL_STARTED,
                 AgentTimingEventKind.CONTEXT_GATE_INITIAL_FINISHED,
+                initialTimingRound,
             ) {
                 contextPreparer.prepareOrdinaryChat(
                     messages = providerEphemeralMessages,
@@ -3178,7 +3202,10 @@ class GenerationHandler(
                 )
             }
         } catch (overflow: ProviderContextOverflowException) {
-            agentTiming?.mark(AgentTimingEventKind.REQUEST_BREAKDOWN_BUILD_STARTED)
+            agentTiming?.mark(
+                AgentTimingEventKind.REQUEST_BREAKDOWN_BUILD_STARTED,
+                initialTimingRound,
+            )
             val overflowBreakdown = buildRequestBreakdown(providerEphemeralMessages)
                 .withContextBudget(
                     effectiveContextWindowTokens = resolvedContextWindow.effectiveTokens,
@@ -3190,10 +3217,14 @@ class GenerationHandler(
                     trace = overflow.overflow.trace,
                     originalMediaTokens = mediaTokens(providerEphemeralMessages),
                 )
-            agentTiming?.mark(AgentTimingEventKind.REQUEST_BREAKDOWN_BUILD_FINISHED)
+            agentTiming?.mark(
+                AgentTimingEventKind.REQUEST_BREAKDOWN_BUILD_FINISHED,
+                initialTimingRound,
+            )
             agentTiming.timedAgentStage(
                 AgentTimingEventKind.REQUEST_BREAKDOWN_WRITE_STARTED,
                 AgentTimingEventKind.REQUEST_BREAKDOWN_WRITE_FINISHED,
+                initialTimingRound,
             ) { diagnosticHandle.recordRequestBreakdown(context.filesDir, overflowBreakdown) }
             Log.w(TAG, "context hard cap rejected initial provider projection: ${overflow.overflow.kind}")
             throw overflow
@@ -3202,6 +3233,7 @@ class GenerationHandler(
         val transformedMessages = agentTiming.timedAgentStageSuspend(
             AgentTimingEventKind.INPUT_TRANSFORM_STARTED,
             AgentTimingEventKind.INPUT_TRANSFORM_FINISHED,
+            initialTimingRound,
         ) {
             providerContext.transforms(
                 transformers = transformers,
@@ -3221,6 +3253,7 @@ class GenerationHandler(
             agentTiming.timedAgentStage(
                 AgentTimingEventKind.CONTEXT_GATE_FINAL_STARTED,
                 AgentTimingEventKind.CONTEXT_GATE_FINAL_FINISHED,
+                initialTimingRound,
             ) {
                 contextPreparer.prepareOrdinaryChat(
                     messages = finalContextCandidateMessages,
@@ -3236,7 +3269,10 @@ class GenerationHandler(
                 )
             }
         } catch (overflow: ProviderContextOverflowException) {
-            agentTiming?.mark(AgentTimingEventKind.REQUEST_BREAKDOWN_BUILD_STARTED)
+            agentTiming?.mark(
+                AgentTimingEventKind.REQUEST_BREAKDOWN_BUILD_STARTED,
+                initialTimingRound,
+            )
             val overflowBreakdown = buildRequestBreakdown(finalContextCandidateMessages)
                 .withContextBudget(
                     effectiveContextWindowTokens = resolvedContextWindow.effectiveTokens,
@@ -3255,10 +3291,14 @@ class GenerationHandler(
                     trace = overflow.overflow.trace,
                     originalMediaTokens = mediaTokens(finalContextCandidateMessages),
                 )
-            agentTiming?.mark(AgentTimingEventKind.REQUEST_BREAKDOWN_BUILD_FINISHED)
+            agentTiming?.mark(
+                AgentTimingEventKind.REQUEST_BREAKDOWN_BUILD_FINISHED,
+                initialTimingRound,
+            )
             agentTiming.timedAgentStage(
                 AgentTimingEventKind.REQUEST_BREAKDOWN_WRITE_STARTED,
                 AgentTimingEventKind.REQUEST_BREAKDOWN_WRITE_FINISHED,
+                initialTimingRound,
             ) { diagnosticHandle.recordRequestBreakdown(context.filesDir, overflowBreakdown) }
             Log.w(TAG, "context hard cap rejected final provider projection: ${overflow.overflow.kind}")
             throw overflow
@@ -3567,6 +3607,7 @@ class GenerationHandler(
         val params = agentTiming.timedAgentStage(
             AgentTimingEventKind.REQUEST_BUILD_STARTED,
             AgentTimingEventKind.REQUEST_BUILD_FINISHED,
+            initialTimingRound,
         ) { TextGenerationParams(
             model = model,
             temperature = assistant.temperature,
@@ -3609,6 +3650,7 @@ class GenerationHandler(
             agentTiming.timedAgentStageSuspend(
                 AgentTimingEventKind.MEMORY_LAST_ACCESS_STARTED,
                 AgentTimingEventKind.MEMORY_LAST_ACCESS_FINISHED,
+                initialTimingRound,
             ) {
                 try {
                     memoryRepo.markLastAccessed(
@@ -3688,6 +3730,7 @@ class GenerationHandler(
         val breakdown = agentTiming.timedAgentStage(
             AgentTimingEventKind.REQUEST_BREAKDOWN_BUILD_STARTED,
             AgentTimingEventKind.REQUEST_BREAKDOWN_BUILD_FINISHED,
+            initialTimingRound,
         ) { buildRequestBreakdown(
             finalMessages = internalMessages,
             recallPrompt = selectedRecall.text,
@@ -3713,6 +3756,7 @@ class GenerationHandler(
         agentTiming.timedAgentStage(
             AgentTimingEventKind.REQUEST_BREAKDOWN_WRITE_STARTED,
             AgentTimingEventKind.REQUEST_BREAKDOWN_WRITE_FINISHED,
+            initialTimingRound,
         ) { diagnosticHandle.recordRequestBreakdown(context.filesDir, breakdown) }
         val watchdogEnabled = stream &&
             provider is ProviderSetting.OpenAI &&
@@ -3724,6 +3768,7 @@ class GenerationHandler(
                 providerCallIndex = providerCallIndex,
                 stream = stream,
                 runtimeRunId = runControl?.runId,
+                initialRound = initialTimingRound,
                 onRoundCreated = onTimingRoundReady,
             )
         }

@@ -210,7 +210,7 @@ class DreamSynthesisCoordinatorTest {
     }
 
     @Test
-    fun `exact idle recheck does not apply the full idle delay a second time`() = runBlocking {
+    fun `exact idle recheck replaces a just-finished worker without applying idle delay twice`() = runBlocking {
         val scheduler = RecordingScheduler()
 
         val result = coordinator(
@@ -220,6 +220,7 @@ class DreamSynthesisCoordinatorTest {
 
         assertEquals(listOf(PRIVATE_SCOPE), result.scheduledScopes)
         assertTrue(scheduler.enqueuedScopes.single().idleDeadlineAlreadyObserved)
+        assertTrue(scheduler.enqueuedScopes.single().replaceExisting)
     }
 
     @Test

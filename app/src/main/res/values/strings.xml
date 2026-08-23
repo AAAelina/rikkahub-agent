@@ -2388,7 +2388,8 @@
   <string name="setting_display_page_show_agent_timing_title">Show Agent performance timing</string>
   <string name="setting_display_page_show_agent_timing_desc">Show an in-memory timing summary and per-round details for tasks started in this chat.</string>
   <string name="agent_timing_summary">Total %1$s · excluding human wait %2$s · %3$s %4$s · %5$d rounds / %6$d tools</string>
-  <string name="agent_timing_first_progress">Provider TTFT</string>
+  <string name="agent_timing_first_progress">Provider first progress</string>
+  <string name="agent_timing_first_text">Provider first text</string>
   <string name="agent_timing_full_response">Full response returned</string>
   <string name="agent_timing_details_title">Agent performance timing</string>
   <string name="agent_timing_round_title">Round %1$d · attempt %2$d</string>
@@ -2405,7 +2406,9 @@
   <string name="agent_timing_section_handoff">Handoff</string>
   <string name="agent_timing_section_approval">Approval</string>
   <string name="agent_timing_metric_admission">Submit to run start</string>
+  <string name="agent_timing_metric_run_preflight">Generation preflight</string>
   <string name="agent_timing_metric_memory_retrieval">Memory retrieval</string>
+  <string name="agent_timing_metric_auto_context">Automatic device context</string>
   <string name="agent_timing_metric_tool_surface">Tool surface</string>
   <string name="agent_timing_metric_mcp_discovery">MCP discovery</string>
   <string name="agent_timing_metric_context">Context preparation</string>
@@ -2413,6 +2416,11 @@
   <string name="agent_timing_metric_memory_last_access">Memory last-access update</string>
   <string name="agent_timing_metric_provider_prepare">Provider preparation</string>
   <string name="agent_timing_metric_provider_total">Provider total</string>
+  <string name="agent_timing_metric_provider_output_tokens">Provider output tokens</string>
+  <string name="agent_timing_metric_provider_decode_tps">Provider decode speed</string>
+  <string name="agent_timing_metric_provider_visible_stream">Provider visible stream (est.)</string>
+  <string name="agent_timing_metric_session_visible_stream">Session consume stream (est.)</string>
+  <string name="agent_timing_metric_ui_visible_stream">UI visible refresh (est.)</string>
   <string name="agent_timing_metric_tool_batch">Parallel tool batch</string>
   <string name="agent_timing_metric_tool_execution">Execution</string>
   <string name="agent_timing_metric_tool_post_processing">Post-processing</string>
@@ -2420,6 +2428,10 @@
   <string name="agent_timing_metric_human_wait">Human approval wait</string>
   <string name="agent_timing_metric_approval_resolution">Approval commit / resume</string>
   <string name="agent_timing_metric_final_save">Final save</string>
+  <string name="agent_timing_metric_generation_done_notify">Generation-complete notification</string>
+  <string name="agent_timing_metric_post_provider_processing">Post-provider processing</string>
+  <string name="agent_timing_metric_run_completion_drain">Run completion drain</string>
+  <string name="agent_timing_metric_runtime_finalization">Runtime finalization</string>
   <string name="agent_timing_metric_tool_numbered">Tool %1$d · %2$s</string>
   <string name="agent_timing_metric_recent_chats">Recent chats query</string>
   <string name="agent_timing_metric_memory_prompt">Memory prompt</string>
@@ -2459,9 +2471,11 @@
   <string name="memory_v2_observer_developer_only">This page is visible only while Developer mode is enabled.</string>
   <string name="memory_dream_tab">Dream</string>
   <string name="memory_dream_summary_title">Dream summary</string>
-  <string name="memory_dream_summary_desc">A derived, reviewable understanding built from authoritative memories. It never replaces your saved memories.</string>
+  <string name="memory_dream_summary_desc">An offline, reviewable portrait distilled from the shared history between you and this assistant.</string>
   <string name="memory_dream_loading">Loading Dream state…</string>
   <string name="memory_dream_epoch_summary">Memory epoch %1$d · applied %2$d · Dream revision %3$d</string>
+  <string name="memory_dream_experience_summary">Experience %1$d · applied %2$d · portrait revision %3$d · pending %4$d · debt %5$.2f</string>
+  <string name="memory_dream_portrait_empty">No stable portrait has formed here yet.</string>
   <string name="memory_dream_snapshot_summary">%1$d active claims · about %2$d tokens</string>
   <string name="memory_dream_section_profile">Profile context</string>
   <string name="memory_dream_section_projects">Current projects</string>

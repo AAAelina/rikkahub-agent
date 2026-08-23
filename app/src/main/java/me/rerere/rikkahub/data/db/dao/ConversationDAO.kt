@@ -55,6 +55,9 @@ interface ConversationDAO {
     @Query("SELECT id FROM conversationentity")
     suspend fun getAllIds(): List<String>
 
+    @Query("SELECT id FROM conversationentity WHERE assistant_id = :assistantId ORDER BY create_at ASC, id ASC")
+    suspend fun getAllIdsOfAssistant(assistantId: String): List<String>
+
     @Query("SELECT * FROM conversationentity WHERE id = :id")
     suspend fun getConversationById(id: String): ConversationEntity?
 

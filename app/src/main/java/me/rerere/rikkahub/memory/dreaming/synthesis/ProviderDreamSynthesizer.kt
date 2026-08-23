@@ -16,6 +16,7 @@ import me.rerere.ai.provider.TextGenerationParams
 import me.rerere.ai.ui.FinishCategory
 import me.rerere.ai.ui.UIMessage
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.findModelById
 import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.memory.memoryExtractionReasoningLevel
 import me.rerere.rikkahub.memory.resolveMemoryExtractionModel
@@ -41,7 +42,8 @@ class ProviderDreamSynthesizer(
             )
         }
         val settings = settingsStore.settingsFlow.first { !it.init }
-        val model = settings.resolveMemoryExtractionModel()
+        val model = settings.dreamModelId?.let(settings.providers::findModelById)
+            ?: settings.resolveMemoryExtractionModel()
             ?: return DreamSynthesizeResult.Failure(
                 DreamSynthesizeFailure.MODEL_UNAVAILABLE,
                 retryable = false,

@@ -37,6 +37,14 @@ data class DreamClaimEntity(
     val storageClass: String,
     @ColumnInfo("epistemic_type")
     val epistemicType: String,
+    @ColumnInfo(name = "subject_kind", defaultValue = "'USER'")
+    val subjectKind: String = "USER",
+    @ColumnInfo(name = "profile_section", defaultValue = "'general'")
+    val profileSection: String = "general",
+    @ColumnInfo(name = "epistemic_origin", defaultValue = "'INFERRED'")
+    val epistemicOrigin: String = "INFERRED",
+    @ColumnInfo(name = "content_type", defaultValue = "'OTHER'")
+    val contentType: String = "OTHER",
     val title: String,
     val statement: String,
     val state: String,

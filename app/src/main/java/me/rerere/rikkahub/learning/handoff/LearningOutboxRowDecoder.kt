@@ -199,7 +199,23 @@ object LearningOutboxRowDecoder {
             ) }.getOrNull() ?: return LearningOutboxDecodeResult.Invalid(
                 LearningOutboxDecodeError.EVENT_ID_MISMATCH,
             )
-            if (row.eventId != expectedId) {
+            val scopedExpectedId = if (
+                knownEventType == LearningEventType.SOURCE_INVALIDATED &&
+                eventCode.schemaVersion == 2 &&
+                row.scopeKind != null &&
+                row.scopeId != null
+            ) {
+                runCatching {
+                    LearningCanonicalId.scopedSourceInvalidationEventId(
+                        legacyEventId = expectedId,
+                        scopeKindCode = row.scopeKind,
+                        scopeId = row.scopeId,
+                    )
+                }.getOrNull()
+            } else {
+                null
+            }
+            if (row.eventId != expectedId && row.eventId != scopedExpectedId) {
                 return LearningOutboxDecodeResult.Invalid(
                     LearningOutboxDecodeError.EVENT_ID_MISMATCH,
                 )

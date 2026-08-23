@@ -10,6 +10,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 import me.rerere.rikkahub.data.db.AppDatabase
+import me.rerere.rikkahub.data.db.dao.DreamExperienceDao
 import me.rerere.rikkahub.data.db.dao.DreamRuntimeSourceRow
 import me.rerere.rikkahub.data.db.dao.DreamSynthesisDao
 import me.rerere.rikkahub.data.db.entity.DreamClaimEntity
@@ -32,12 +33,18 @@ import me.rerere.rikkahub.memory.dreaming.model.DreamClaimHead
 import me.rerere.rikkahub.memory.dreaming.model.DreamClaimSourcePin
 import me.rerere.rikkahub.memory.dreaming.model.DreamClaimState
 import me.rerere.rikkahub.memory.dreaming.model.DreamClaimVersionCanonicalV1
+import me.rerere.rikkahub.memory.dreaming.model.DreamContentType
 import me.rerere.rikkahub.memory.dreaming.model.DreamEpistemicType
+import me.rerere.rikkahub.memory.dreaming.model.DreamEpistemicOrigin
+import me.rerere.rikkahub.memory.dreaming.model.DreamPairScopeId
 import me.rerere.rikkahub.memory.dreaming.model.DreamScopeId
 import me.rerere.rikkahub.memory.dreaming.model.DreamSha256
 import me.rerere.rikkahub.memory.dreaming.model.DreamStorageClass
 import me.rerere.rikkahub.memory.dreaming.model.DreamSupportType
+import me.rerere.rikkahub.memory.dreaming.model.DreamSubjectKind
 import me.rerere.rikkahub.memory.dreaming.model.DreamValidatedClaimVersion
+import me.rerere.rikkahub.memory.dreaming.experience.toDreamInputCandidate
+import me.rerere.rikkahub.memory.dreaming.input.DreamInputCandidateOrigin
 import me.rerere.rikkahub.memory.dreaming.model.requireDreamStableId
 import me.rerere.rikkahub.memory.dreaming.snapshot.DreamSnapshotCompileLimits
 import me.rerere.rikkahub.memory.dreaming.snapshot.DreamSnapshotCompileRequest
@@ -54,6 +61,7 @@ import me.rerere.rikkahub.memory.dreaming.temporal.TemporalState
 class RoomDreamSnapshotProjectionReader(
     private val database: AppDatabase,
     private val synthesisDao: DreamSynthesisDao,
+    private val experienceDao: DreamExperienceDao,
 ) : DreamSnapshotProjectionReader {
     override suspend fun read(
         request: DreamSnapshotProjectionReadRequest,
@@ -74,6 +82,9 @@ class RoomDreamSnapshotProjectionReader(
         request: DreamSnapshotProjectionReadRequest,
     ): DreamSnapshotProjection {
         val scope = request.scopeId
+        if (DreamPairScopeId.parseOrNull(scope.value) != null) {
+            return readPairInCurrentTransaction(request)
+        }
         val state = synthesisDao.getRuntimeScopeState(scope.value)
             ?: return unavailable(DreamSnapshotProjectionUnavailableReason.SCOPE_STATE_MISSING)
         if (!state.isRuntimeCurrentFor(scope)) {
@@ -145,6 +156,7 @@ class RoomDreamSnapshotProjectionReader(
                     ?: return unavailable(DreamSnapshotProjectionUnavailableReason.CLAIM_VERSION_MISSING),
                 rows = rows,
                 scope = scope,
+                head = claim,
             ) ?: return unavailable(DreamSnapshotProjectionUnavailableReason.MANIFEST_INVALID)
             val head = parsed.toHead(scope)
             if (!claim.matchesRuntimeHead(head, state.memoryEpoch)) {
@@ -236,6 +248,178 @@ class RoomDreamSnapshotProjectionReader(
             claims = projectionClaims,
         )
     }
+
+    /** Pair-Dream keeps the last committed portrait usable while newer Experiences are pending. */
+    private suspend fun readPairInCurrentTransaction(
+        request: DreamSnapshotProjectionReadRequest,
+    ): DreamSnapshotProjection {
+        val scope = request.scopeId
+        val state = experienceDao.getState(scope.value)
+            ?: return unavailable(DreamSnapshotProjectionUnavailableReason.SCOPE_STATE_MISSING)
+        if (state.profileRevision <= 0L || state.appliedExperienceEpoch < 0L ||
+            state.experienceEpoch < state.appliedExperienceEpoch
+        ) {
+            return unavailable(DreamSnapshotProjectionUnavailableReason.ACTIVE_SNAPSHOT_MISSING)
+        }
+        val activeSnapshotId = state.activeSnapshotId
+            ?: return unavailable(DreamSnapshotProjectionUnavailableReason.ACTIVE_SNAPSHOT_MISSING)
+        if (!isStableId(activeSnapshotId)) {
+            return unavailable(DreamSnapshotProjectionUnavailableReason.MANIFEST_INVALID)
+        }
+        val snapshot = synthesisDao.getSnapshot(activeSnapshotId, scope.value)
+            ?: return unavailable(DreamSnapshotProjectionUnavailableReason.SNAPSHOT_ROW_MISSING)
+        if (snapshot.status != SNAPSHOT_ACTIVE || snapshot.scopeId != scope.value ||
+            snapshot.snapshotId != activeSnapshotId || snapshot.snapshotRevision != state.profileRevision ||
+            snapshot.committedDreamRevision != state.profileRevision ||
+            snapshot.sourceMemoryEpoch != state.appliedExperienceEpoch
+        ) {
+            return unavailable(DreamSnapshotProjectionUnavailableReason.MANIFEST_INVALID)
+        }
+        if (!snapshot.hasBoundedPayload()) {
+            return unavailable(DreamSnapshotProjectionUnavailableReason.MANIFEST_INVALID)
+        }
+        val storedPayloadHash = trySha256(snapshot.payloadSha256)
+            ?: return unavailable(DreamSnapshotProjectionUnavailableReason.PAYLOAD_HASH_INVALID)
+        if (DreamCanonicalJson.sha256(snapshot.canonicalPayloadJson.toByteArray(StandardCharsets.UTF_8)) !=
+            storedPayloadHash
+        ) {
+            return unavailable(DreamSnapshotProjectionUnavailableReason.PAYLOAD_HASH_INVALID)
+        }
+
+        val claims = synthesisDao.listRuntimeActiveClaimHeads(
+            scopeId = scope.value,
+            limit = MAX_DREAM_RUNTIME_PROJECTION_CLAIMS + 1,
+        )
+        if (claims.size > MAX_DREAM_RUNTIME_PROJECTION_CLAIMS ||
+            claims.map(DreamClaimEntity::claimId).distinct().size != claims.size
+        ) {
+            return unavailable(DreamSnapshotProjectionUnavailableReason.MANIFEST_INVALID)
+        }
+        val versions = synthesisDao.listRuntimeActiveClaimVersions(
+            scopeId = scope.value,
+            limit = MAX_DREAM_RUNTIME_PROJECTION_CLAIMS + 1,
+        )
+        val versionsById = versions.associateBy(DreamClaimVersionEntity::claimId)
+        if (versionsById.size != claims.size) {
+            return unavailable(DreamSnapshotProjectionUnavailableReason.CLAIM_VERSION_MISSING)
+        }
+
+        val parsedById = linkedMapOf<String, ParsedRuntimeVersion>()
+        for (claim in claims) {
+            val sourceRows = synthesisDao.listClaimExperienceSources(claim.claimId, claim.claimRevision)
+            if (sourceRows.isEmpty() || sourceRows.size > MAX_RUNTIME_SOURCE_PINS_PER_CLAIM) {
+                return unavailable(DreamSnapshotProjectionUnavailableReason.CLAIM_VERSION_MISSING)
+            }
+            val sources = sourceRows.map { source ->
+                val experience = experienceDao.getExperience(source.experienceId, scope.value)
+                    ?: return unavailable(DreamSnapshotProjectionUnavailableReason.MANIFEST_INVALID)
+                if (experience.status == "DISCARDED" ||
+                    experience.experienceEpoch != source.experienceEpoch ||
+                    experience.contentDigest != source.contentDigest
+                ) {
+                    return unavailable(DreamSnapshotProjectionUnavailableReason.MANIFEST_INVALID)
+                }
+                val candidate = experience.toDreamInputCandidate(
+                    scopeId = scope,
+                    origin = DreamInputCandidateOrigin.AUTHORITY_CHANGE,
+                    json = RUNTIME_JSON,
+                ) ?: return unavailable(DreamSnapshotProjectionUnavailableReason.MANIFEST_INVALID)
+                if (candidate.pin.expectedSourceManifestHash.value != source.sourceManifestHash) {
+                    return unavailable(DreamSnapshotProjectionUnavailableReason.MANIFEST_INVALID)
+                }
+                DreamClaimSourcePin(
+                    authority = candidate.pin,
+                    supportType = runCatching { enumValueOf<DreamSupportType>(source.supportType) }.getOrNull()
+                        ?: return unavailable(DreamSnapshotProjectionUnavailableReason.MANIFEST_INVALID),
+                    directAuthority = true,
+                )
+            }
+            val version = versionsById[claim.claimId]
+                ?: return unavailable(DreamSnapshotProjectionUnavailableReason.CLAIM_VERSION_MISSING)
+            val parsed = parseVersion(version, sources, claim)
+                ?: return unavailable(DreamSnapshotProjectionUnavailableReason.MANIFEST_INVALID)
+            val head = parsed.toHead(scope)
+            if (!claim.matchesRuntimeHead(head, state.appliedExperienceEpoch)) {
+                return unavailable(DreamSnapshotProjectionUnavailableReason.MANIFEST_INVALID)
+            }
+            parsedById[claim.claimId] = parsed
+        }
+
+        val compiled = try {
+            DreamSnapshotCompiler.compile(
+                DreamSnapshotCompileRequest(
+                    scopeId = scope,
+                    compilerRevision = snapshot.compilerRevision,
+                    claims = claims.map { claim -> parsedById.getValue(claim.claimId).toHead(scope) },
+                    limits = RUNTIME_SNAPSHOT_LIMITS,
+                ),
+            )
+        } catch (_: Exception) {
+            return unavailable(DreamSnapshotProjectionUnavailableReason.PAYLOAD_PARSE_FAILED)
+        }
+        if (compiled.payloadJson != snapshot.canonicalPayloadJson ||
+            compiled.payloadHash != storedPayloadHash || compiled.claimCount != snapshot.claimCount ||
+            compiled.estimatedTokens != snapshot.estimatedTokens
+        ) {
+            return unavailable(DreamSnapshotProjectionUnavailableReason.PAYLOAD_HASH_INVALID)
+        }
+        val claimsById = claims.associateBy(DreamClaimEntity::claimId)
+        val projectionClaims = compiled.manifest.map { manifest ->
+            val current = claimsById[manifest.claimId]
+                ?: return unavailable(DreamSnapshotProjectionUnavailableReason.MANIFEST_INVALID)
+            val parsed = parsedById[manifest.claimId]
+                ?: return unavailable(DreamSnapshotProjectionUnavailableReason.MANIFEST_INVALID)
+            val version = parsed.version
+            DreamRuntimeClaimProjection(
+                ref = DreamRuntimeClaimRef(manifest.claimId, manifest.claimRevision),
+                scopeId = scope,
+                section = manifest.section,
+                ordinal = manifest.ordinal,
+                snapshotState = version.nextState,
+                currentState = DreamClaimState.ACTIVE_CONTEXTUAL,
+                currentRevision = current.claimRevision,
+                currentVersionHash = parsed.contentHash,
+                storageClass = version.storageClass,
+                epistemicType = version.epistemicType,
+                title = version.title,
+                statement = version.statement,
+                confidencePermille = version.confidencePermille,
+                temporalState = version.temporalState,
+                validFromEpochMs = version.validFromEpochMs,
+                validToEpochMs = version.validToEpochMs,
+                versionHash = parsed.contentHash,
+                fragmentIntegrity = DreamRuntimeFragmentIntegrity.VERIFIED,
+                sourceFence = DreamRuntimeSourceFence(
+                    validity = DreamRuntimeSourceValidity.CURRENT_CONFIRMED,
+                    validatedAtEpochMs = request.frozenNowEpochMs,
+                    validatedClaimRevision = version.nextRevision,
+                    directAuthoritySourceCount = version.sources.size,
+                    directSupportingSourceCount = version.sources.count {
+                        it.supportType in DIRECT_SUPPORT_TYPES
+                    },
+                    indirectDerivedSourceCount = 0,
+                ),
+            )
+        }
+        return DreamSnapshotProjection.Available(
+            scopeId = scope,
+            schemaVersion = compiled.schemaVersion,
+            snapshotId = snapshot.snapshotId,
+            activeSnapshotId = state.activeSnapshotId,
+            snapshotStatus = DreamRuntimeSnapshotStatus.ACTIVE,
+            snapshotRevision = snapshot.snapshotRevision,
+            sourceMemoryEpoch = state.appliedExperienceEpoch,
+            currentMemoryEpoch = state.experienceEpoch,
+            committedDreamRevision = snapshot.committedDreamRevision,
+            currentDreamRevision = state.profileRevision,
+            payloadHash = storedPayloadHash,
+            payloadIntegrity = DreamRuntimePayloadIntegrity.VERIFIED,
+            snapshotCompilerRevision = snapshot.compilerRevision,
+            expectedClaimCount = snapshot.claimCount,
+            readConsistency = DreamRuntimeReadConsistency.ATOMIC,
+            claims = projectionClaims,
+        )
+    }
 }
 
 private data class ParsedRuntimeVersion(
@@ -258,6 +442,10 @@ private data class ParsedRuntimeVersion(
         validToEpochMs = version.validToEpochMs,
         versionHash = contentHash,
         sources = version.sources,
+        subjectKind = version.subjectKind,
+        profileSection = version.profileSection,
+        epistemicOrigin = version.epistemicOrigin,
+        contentType = version.contentType,
     )
 }
 
@@ -272,6 +460,16 @@ private fun parseVersion(
     entity: DreamClaimVersionEntity,
     rows: List<DreamRuntimeSourceRow>,
     scope: DreamScopeId,
+    head: DreamClaimEntity,
+): ParsedRuntimeVersion? {
+    val sources = rows.map { row -> row.toImmutableSourcePin(scope) ?: return null }
+    return parseVersion(entity, sources, head)
+}
+
+private fun parseVersion(
+    entity: DreamClaimVersionEntity,
+    sources: List<DreamClaimSourcePin>,
+    head: DreamClaimEntity,
 ): ParsedRuntimeVersion? {
     if (entity.canonicalClaimJson.toByteArray(StandardCharsets.UTF_8).size > MAX_CLAIM_VERSION_UTF8_BYTES) {
         return null
@@ -286,7 +484,6 @@ private fun parseVersion(
     }
     val revision = root.runtimeLong("revision") ?: return null
     if (revision != entity.claimRevision) return null
-    val sources = rows.map { row -> row.toImmutableSourcePin(scope) ?: return null }
     val validFrom = root.runtimeNullableLong("valid_from_epoch_ms") ?: return null
     val validTo = root.runtimeNullableLong("valid_to_epoch_ms") ?: return null
     val version = try {
@@ -306,6 +503,10 @@ private fun parseVersion(
             validToEpochMs = validTo.value,
             sources = sources,
             reason = enumValueOf(root.runtimeString("reason") ?: return null),
+            subjectKind = enumValueOf<DreamSubjectKind>(head.subjectKind),
+            profileSection = head.profileSection,
+            epistemicOrigin = enumValueOf<DreamEpistemicOrigin>(head.epistemicOrigin),
+            contentType = enumValueOf<DreamContentType>(head.contentType),
         )
     } catch (_: Exception) {
         return null
@@ -438,7 +639,9 @@ private fun DreamSnapshotEntity.hasBoundedPayload(): Boolean =
 private fun DreamClaimEntity.matchesRuntimeHead(head: DreamClaimHead, memoryEpoch: Long): Boolean =
     scopeId == head.scopeId.value && claimId == head.claimId && claimRevision == head.revision &&
         claimKey == head.claimKey && storageClass == head.storageClass.name &&
-        epistemicType == head.epistemicType.name && state == DreamClaimState.ACTIVE_CONTEXTUAL.name &&
+        epistemicType == head.epistemicType.name && subjectKind == head.subjectKind.name &&
+        profileSection == head.profileSection && epistemicOrigin == head.epistemicOrigin.name &&
+        contentType == head.contentType.name && state == DreamClaimState.ACTIVE_CONTEXTUAL.name &&
         state == head.state.name && title == head.title && statement == head.statement &&
         confidence.isFinite() && (confidence * 1_000.0).roundToInt() == head.confidencePermille &&
         temporalState == head.temporalState.name && validFromMs == head.validFromEpochMs &&

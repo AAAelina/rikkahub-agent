@@ -1,6 +1,8 @@
 package me.rerere.rikkahub.data.ai
 
 import java.util.concurrent.ConcurrentHashMap
+import me.rerere.ai.core.TokenUsage
+import me.rerere.ai.core.merge
 import me.rerere.rikkahub.data.ai.execution.ToolExecutionTimingHook
 import me.rerere.rikkahub.data.ai.execution.ToolExecutionTimingOutcome
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingEventKind
@@ -8,6 +10,7 @@ import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingEventResult
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingHandle
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingResponseMode
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingRoundRef
+import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingStreamStage
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingToolRef
 import kotlin.uuid.Uuid
 
@@ -17,9 +20,13 @@ internal class AgentTimingProviderHook(
     private val providerCallIndex: Int,
     private val stream: Boolean,
     private val runtimeRunId: Uuid?,
+    initialRound: AgentTimingRoundRef? = null,
     private val onRoundCreated: (AgentTimingRoundRef) -> Unit = {},
 ) : ProviderTurnTimingHook {
-    private val rounds = ConcurrentHashMap<Int, AgentTimingRoundRef>()
+    private val rounds = ConcurrentHashMap<Int, AgentTimingRoundRef>().apply {
+        initialRound?.let { put(0, it) }
+    }
+    private val usageByAttempt = ConcurrentHashMap<Int, TokenUsage>()
 
     fun round(attemptIndex: Int = 0): AgentTimingRoundRef? = rounds[attemptIndex]
 
@@ -60,6 +67,43 @@ internal class AgentTimingProviderHook(
         )
         if (kind == ProviderProgressKind.FULL_RESPONSE) {
             handle.mark(AgentTimingEventKind.PROVIDER_FIRST_PROGRESS, round)
+        }
+    }
+
+    override fun onFirstTextProgress(attemptIndex: Int) {
+        handle.mark(AgentTimingEventKind.PROVIDER_FIRST_TEXT, roundFor(attemptIndex))
+    }
+
+    override fun onRawVisibleTextProgress(attemptIndex: Int, estimatedTokens: Long) {
+        roundFor(attemptIndex)?.let { round ->
+            handle.recordRoundVisibleProgress(
+                round = round,
+                stage = AgentTimingStreamStage.PROVIDER_RAW_VISIBLE,
+                estimatedTokens = estimatedTokens,
+            )
+        }
+    }
+
+    override fun onConsumerVisibleTextProgress(attemptIndex: Int, estimatedTokens: Long) {
+        roundFor(attemptIndex)?.let { round ->
+            handle.recordRoundVisibleProgress(
+                round = round,
+                stage = AgentTimingStreamStage.SESSION_CONSUMER_VISIBLE,
+                estimatedTokens = estimatedTokens,
+            )
+        }
+    }
+
+    override fun onUsage(attemptIndex: Int, usage: TokenUsage) {
+        val merged = usageByAttempt.compute(attemptIndex) { _, current -> current.merge(usage) }
+            ?: usage
+        roundFor(attemptIndex)?.let { round ->
+            handle.updateRoundUsage(
+                round = round,
+                promptTokens = merged.promptTokens,
+                completionTokens = merged.completionTokens,
+                cachedTokens = merged.cachedTokens,
+            )
         }
     }
 

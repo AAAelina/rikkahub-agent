@@ -432,7 +432,7 @@ class DreamSynthesisOrchestratorTest {
     )
 
     private fun noOpJson() =
-        """{"schema_version":1,"proposal_nonce":"p_${"N".repeat(43)}","base_memory_epoch":7,"base_dream_revision":3,"mode":"INCREMENTAL","operations":[{"op":"NO_OP"}]}"""
+        """{"schema_version":2,"proposal_nonce":"p_${"N".repeat(43)}","base_experience_epoch":7,"base_dream_revision":3,"mode":"INCREMENTAL","operations":[{"op":"NO_OP"}]}"""
 
     private fun audit() = DreamModelAudit(
         providerKind = "fake",

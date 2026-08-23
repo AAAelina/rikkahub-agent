@@ -195,6 +195,39 @@ class AgentTimingPresentationTest {
     }
 
     @Test
+    fun `provider detail separates first progress from first text and computes decode speed`() {
+        val round = AgentTimingRoundSnapshot(
+            ordinal = 0,
+            providerCallIndex = 0,
+            attemptIndex = 0,
+            responseMode = AgentTimingResponseMode.STREAMING,
+            runtimeRunId = null,
+            milestones = mapOf(
+                AgentTimingEventKind.APP_PROVIDER_DISPATCH to seconds(1),
+                AgentTimingEventKind.PROVIDER_FIRST_PROGRESS to seconds(2),
+                AgentTimingEventKind.PROVIDER_FIRST_TEXT to seconds(4),
+                AgentTimingEventKind.PROVIDER_STREAM_FINISHED to seconds(6),
+            ),
+            promptTokens = 100,
+            completionTokens = 200,
+            cachedTokens = 50,
+        )
+
+        val presentation = buildAgentTimingDetail(
+            trace(finishedAtNs = seconds(7), rounds = listOf(round))
+        ).rounds.single()
+        val providerMetrics = presentation.sections
+            .single { it.kind == AgentTimingSectionKind.PROVIDER }
+            .metrics
+            .associateBy { it.kind }
+
+        assertEquals(seconds(1), providerMetrics.getValue(AgentTimingMetricKind.FIRST_PROGRESS).durationNs)
+        assertEquals(seconds(3), providerMetrics.getValue(AgentTimingMetricKind.FIRST_TEXT).durationNs)
+        assertEquals(200, presentation.providerStats?.outputTokens)
+        assertEquals(50.0, presentation.providerStats?.decodeTps ?: 0.0, 0.001)
+    }
+
+    @Test
     fun `response layers separate session apply from visible draw`() {
         val detail = buildAgentTimingDetail(
             trace(

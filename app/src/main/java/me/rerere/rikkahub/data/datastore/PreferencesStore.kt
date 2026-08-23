@@ -140,6 +140,7 @@ class SettingsStore(
         val SELECT_MODEL = stringPreferencesKey("chat_model")
         val FAST_MODEL = stringPreferencesKey("fast_model")
         val MEMORY_EXTRACTION_MODEL = stringPreferencesKey("memory_extraction_model")
+        val DREAM_MODEL = stringPreferencesKey("dream_model")
         val DREAMING_PREFERENCES_V1 = stringPreferencesKey("dreaming_preferences_v1")
         val LEARNING_PREFERENCES_V1 = stringPreferencesKey("agent_learning_preferences_v1")
         val TITLE_MODEL = stringPreferencesKey("title_model")
@@ -241,6 +242,8 @@ class SettingsStore(
                 fastModelId = preferences[FAST_MODEL]?.let { Uuid.parse(it) }
                     ?: DEFAULT_AUTO_MODEL_ID,
                 memoryExtractionModelId = preferences[MEMORY_EXTRACTION_MODEL]
+                    ?.let { value -> runCatching { Uuid.parse(value) }.getOrNull() },
+                dreamModelId = preferences[DREAM_MODEL]
                     ?.let { value -> runCatching { Uuid.parse(value) }.getOrNull() },
                 dreamingPreferences = decodeDreamingPreferencesOrDefault(
                     preferences[DREAMING_PREFERENCES_V1],
@@ -542,6 +545,9 @@ class SettingsStore(
             settings.memoryExtractionModelId?.let { modelId ->
                 preferences[MEMORY_EXTRACTION_MODEL] = modelId.toString()
             } ?: preferences.remove(MEMORY_EXTRACTION_MODEL)
+            settings.dreamModelId?.let { modelId ->
+                preferences[DREAM_MODEL] = modelId.toString()
+            } ?: preferences.remove(DREAM_MODEL)
             preferences[DREAMING_PREFERENCES_V1] = encodeDreamingPreferencesFailClosed(
                 settings.dreamingPreferences,
             )
@@ -807,6 +813,8 @@ data class Settings(
     val chatModelId: Uuid = Uuid.random(),
     val fastModelId: Uuid = Uuid.random(),
     val memoryExtractionModelId: Uuid? = null,
+    /** Null follows the configured Memory extraction model; non-null selects Dream independently. */
+    val dreamModelId: Uuid? = null,
     val dreamingPreferences: DreamingPreferencesV1 = DreamingPreferencesV1(),
     val learningPreferences: LearningPreferencesV1 = LearningPreferencesV1(),
     val titleModelId: Uuid? = null,

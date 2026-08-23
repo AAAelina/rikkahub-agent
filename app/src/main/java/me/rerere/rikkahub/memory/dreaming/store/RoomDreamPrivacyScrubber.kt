@@ -83,7 +83,16 @@ class RoomDreamPrivacyScrubber(
         val claims = allScopeClaims.filter { it.claimId in affectedClaimIds }
         val versions = claims.flatMap { allScopeVersions.getValue(it.claimId) }
 
-        val shouldInspectSnapshots = entireScope || claims.isNotEmpty()
+        // The active pointer itself is part of the Dream store integrity contract. Even when the
+        // privacy target does not affect any claim, an existing active snapshot must still be
+        // loaded so the pointer can be validated against the bounded snapshot set. Otherwise an
+        // ordinary source deletion with no affected Dream claims produces snapshots = emptyList()
+        // and is falsely rejected below as STORE_CORRUPTION whenever activeSnapshotId is non-null.
+        val shouldInspectSnapshots = shouldInspectDreamPrivacySnapshots(
+            entireScope = entireScope,
+            hasAffectedClaims = claims.isNotEmpty(),
+            activeSnapshotId = state.activeSnapshotId,
+        )
         val snapshots = if (shouldInspectSnapshots) {
             synthesisDao.listSnapshots(scopeId, MAX_PRIVACY_SNAPSHOTS + 1)
         } else {
@@ -100,9 +109,19 @@ class RoomDreamPrivacyScrubber(
             snapshots.filter { it.status != "TOMBSTONED" || it.canonicalPayloadJson.isNotEmpty() }
         } else {
             snapshots.mapNotNull { snapshot ->
-                val manifest = snapshot.manifestOrNull() ?: return boundedRejection()
-                snapshot.takeIf { entry -> manifest.any(affectedVersions::contains) &&
-                    (entry.status != "TOMBSTONED" || entry.canonicalPayloadJson.isNotEmpty())
+                val manifest = snapshot.manifestOrNull()
+                if (manifest == null) {
+                    // Historical snapshots may have been compiled under an older snapshot
+                    // contract. During privacy/source invalidation we cannot safely prove that
+                    // an unreadable manifest is unrelated to the removed source, so scrub the
+                    // bounded snapshot instead of rejecting the outer conversation transaction.
+                    snapshot.takeIf { entry ->
+                        entry.status != "TOMBSTONED" || entry.canonicalPayloadJson.isNotEmpty()
+                    }
+                } else {
+                    snapshot.takeIf { entry -> manifest.any(affectedVersions::contains) &&
+                        (entry.status != "TOMBSTONED" || entry.canonicalPayloadJson.isNotEmpty())
+                    }
                 }
             }
         }
@@ -321,6 +340,12 @@ class RoomDreamPrivacyScrubber(
         DreamPrivacyScrubRejection.BOUNDED_MANIFEST_INVALID,
     )
 }
+
+internal fun shouldInspectDreamPrivacySnapshots(
+    entireScope: Boolean,
+    hasAffectedClaims: Boolean,
+    activeSnapshotId: String?,
+): Boolean = entireScope || hasAffectedClaims || activeSnapshotId != null
 
 private const val PRIVACY_REASON = "PRIVACY_SCRUB"
 private const val MAX_PRIVACY_MEMORIES = 10_000

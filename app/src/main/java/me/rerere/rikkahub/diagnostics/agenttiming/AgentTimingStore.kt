@@ -219,6 +219,13 @@ class AgentTimingStore(
     ): AgentTimingFirstVisibleDrawMarker? = handleForMessage(conversationId, messageId)
         ?.let(::AgentTimingFirstVisibleDrawMarker)
 
+    /** Records post-frame visible-text growth while the assistant message is streaming. */
+    fun streamRenderMarker(
+        conversationId: Uuid,
+        messageId: Uuid,
+    ): AgentTimingStreamRenderMarker? = handleForMessage(conversationId, messageId)
+        ?.let(::AgentTimingStreamRenderMarker)
+
     /** First-write-wins marker safe to call after a trace has reached a terminal state. */
     fun markFirstVisibleDraw(
         conversationId: Uuid,
@@ -303,6 +310,79 @@ class AgentTimingStore(
             }
         } catch (_: Throwable) {
             null
+        }
+    }
+
+    internal fun updateRoundUsage(
+        sequence: Long,
+        round: AgentTimingRoundRef,
+        promptTokens: Int,
+        completionTokens: Int,
+        cachedTokens: Int,
+    ): Boolean {
+        if (!recordingEnabled.get()) return false
+        return try {
+            synchronized(lock) {
+                val trace = mutableTraceForRecordingLocked(sequence) ?: return@synchronized false
+                val target = trace.rounds.getOrNull(round.ordinal)
+                    ?.takeIf { it.ref == round }
+                    ?: return@synchronized false
+                target.promptTokens = promptTokens.coerceAtLeast(0)
+                target.completionTokens = completionTokens.coerceAtLeast(0)
+                target.cachedTokens = cachedTokens.coerceIn(0, target.promptTokens ?: 0)
+                true
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    internal fun recordRoundVisibleProgress(
+        sequence: Long,
+        round: AgentTimingRoundRef,
+        stage: AgentTimingStreamStage,
+        estimatedTokens: Long,
+    ): Boolean {
+        if (!recordingEnabled.get() || estimatedTokens <= 0L) return false
+        return try {
+            synchronized(lock) {
+                val trace = mutableTraceForRecordingLocked(sequence) ?: return@synchronized false
+                val target = trace.rounds.getOrNull(round.ordinal)
+                    ?.takeIf { it.ref == round }
+                    ?: return@synchronized false
+                val now = clock.elapsedRealtimeNanos()
+                when (stage) {
+                    AgentTimingStreamStage.PROVIDER_RAW_VISIBLE ->
+                        target.providerVisibleStream.record(estimatedTokens, now)
+                    AgentTimingStreamStage.SESSION_CONSUMER_VISIBLE ->
+                        target.sessionVisibleStream.record(estimatedTokens, now)
+                }
+                true
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    internal fun recordUiVisibleFrame(
+        sequence: Long,
+        cumulativeEstimatedTokens: Long,
+    ): Boolean {
+        if (!recordingEnabled.get() || cumulativeEstimatedTokens <= 0L) return false
+        return try {
+            synchronized(lock) {
+                val trace = mutableTraceForRecordingLocked(sequence) ?: return@synchronized false
+                val delta = (cumulativeEstimatedTokens - trace.lastUiVisibleTokens).coerceAtLeast(0L)
+                trace.lastUiVisibleTokens = maxOf(trace.lastUiVisibleTokens, cumulativeEstimatedTokens)
+                if (delta <= 0L) return@synchronized false
+                val target = trace.rounds.lastOrNull {
+                    it.milestones[AgentTimingEventKind.APP_PROVIDER_DISPATCH] != null
+                } ?: return@synchronized false
+                target.uiVisibleStream.record(delta, clock.elapsedRealtimeNanos())
+                true
+            }
+        } catch (_: Throwable) {
+            false
         }
     }
 
@@ -778,6 +858,7 @@ class AgentTimingStore(
         var droppedEventCount: Long = 0L
         var droppedRoundCount: Long = 0L
         var droppedToolCount: Long = 0L
+        var lastUiVisibleTokens: Long = 0L
 
         fun currentActive(): MutableActiveSegment? =
             activeSegments.lastOrNull()?.takeIf { it.finishedAtNs == null }
@@ -863,6 +944,12 @@ class AgentTimingStore(
         val responseMode: AgentTimingResponseMode,
         val runtimeRunId: Uuid?,
         var terminalResult: AgentTimingEventResult? = null,
+        var promptTokens: Int? = null,
+        var completionTokens: Int? = null,
+        var cachedTokens: Int? = null,
+        val providerVisibleStream: MutableStreamProgress = MutableStreamProgress(),
+        val sessionVisibleStream: MutableStreamProgress = MutableStreamProgress(),
+        val uiVisibleStream: MutableStreamProgress = MutableStreamProgress(),
         val milestones: EnumMap<AgentTimingEventKind, Long> =
             EnumMap(AgentTimingEventKind::class.java),
     ) {
@@ -874,6 +961,34 @@ class AgentTimingStore(
             runtimeRunId = runtimeRunId,
             milestones = milestones.toMap(),
             terminalResult = terminalResult,
+            promptTokens = promptTokens,
+            completionTokens = completionTokens,
+            cachedTokens = cachedTokens,
+            providerVisibleStream = providerVisibleStream.snapshot(),
+            sessionVisibleStream = sessionVisibleStream.snapshot(),
+            uiVisibleStream = uiVisibleStream.snapshot(),
+        )
+    }
+
+    private data class MutableStreamProgress(
+        var estimatedTokens: Long = 0L,
+        var sampleCount: Long = 0L,
+        var firstAtNs: Long? = null,
+        var lastAtNs: Long? = null,
+    ) {
+        fun record(deltaTokens: Long, atNs: Long) {
+            if (deltaTokens <= 0L) return
+            if (firstAtNs == null) firstAtNs = atNs
+            lastAtNs = atNs
+            estimatedTokens += deltaTokens
+            sampleCount += 1L
+        }
+
+        fun snapshot() = AgentTimingStreamProgressSnapshot(
+            estimatedTokens = estimatedTokens,
+            sampleCount = sampleCount,
+            firstAtNs = firstAtNs,
+            lastAtNs = lastAtNs,
         )
     }
 
@@ -1022,6 +1137,38 @@ class AgentTimingHandle internal constructor(
         } catch (_: Throwable) {
             null
         }
+    }
+
+    fun updateRoundUsage(
+        round: AgentTimingRoundRef,
+        promptTokens: Int,
+        completionTokens: Int,
+        cachedTokens: Int,
+    ): Boolean = safeCall {
+        store.updateRoundUsage(
+            sequence = traceSequence,
+            round = round,
+            promptTokens = promptTokens,
+            completionTokens = completionTokens,
+            cachedTokens = cachedTokens,
+        )
+    }
+
+    fun recordRoundVisibleProgress(
+        round: AgentTimingRoundRef,
+        stage: AgentTimingStreamStage,
+        estimatedTokens: Long,
+    ): Boolean = safeCall {
+        store.recordRoundVisibleProgress(
+            sequence = traceSequence,
+            round = round,
+            stage = stage,
+            estimatedTokens = estimatedTokens,
+        )
+    }
+
+    fun recordUiVisibleFrame(cumulativeEstimatedTokens: Long): Boolean = safeCall {
+        store.recordUiVisibleFrame(traceSequence, cumulativeEstimatedTokens)
     }
 
     fun registerTool(
@@ -1202,6 +1349,14 @@ class AgentTimingFirstVisibleDrawMarker internal constructor(
 
     /** Invoke from a posted callback, never from the draw pass. */
     fun publishCaptured(): Boolean = handle.publishCapturedVisibleOutcome()
+}
+
+class AgentTimingStreamRenderMarker internal constructor(
+    private val handle: AgentTimingHandle,
+) {
+    /** Call after a Compose frame with the cumulative visible assistant-text estimate. */
+    fun recordVisibleFrame(cumulativeEstimatedTokens: Long): Boolean =
+        handle.recordUiVisibleFrame(cumulativeEstimatedTokens)
 }
 
 internal data class AgentTimingStoreDebugStats(

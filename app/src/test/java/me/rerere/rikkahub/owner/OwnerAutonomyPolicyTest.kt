@@ -31,6 +31,7 @@ class OwnerAutonomyPolicyTest {
         val context = context(ToolCallOrigin.LocalChat)
 
         assertTrue(OwnerAutonomyPolicy.canAutoApprove(context, context.origin, "plugin__abc__write"))
+        assertTrue(OwnerAutonomyPolicy.canAutoApprove(context, context.origin, "mcp__gbao__exec_command"))
         assertTrue(OwnerAutonomyPolicy.canAutoApprove(context, context.origin, "linux_grant_request"))
         assertTrue(OwnerAutonomyPolicy.canAutoApprove(context, context.origin, "linux_grant_revoke"))
         OwnerToolFamily.entries.forEach { family ->

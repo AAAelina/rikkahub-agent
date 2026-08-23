@@ -66,6 +66,7 @@ import me.rerere.rikkahub.data.db.migrations.MIGRATION_45_46
 import me.rerere.rikkahub.data.db.migrations.MIGRATION_46_47
 import me.rerere.rikkahub.data.db.migrations.MIGRATION_47_48
 import me.rerere.rikkahub.data.db.migrations.MIGRATION_48_49
+import me.rerere.rikkahub.data.db.migrations.MIGRATION_49_50
 import me.rerere.rikkahub.data.repository.MemorySearchIndex
 import me.rerere.rikkahub.data.repository.MemoryRetriever
 import me.rerere.rikkahub.memory.AndroidMemoryWorkScheduler
@@ -204,6 +205,7 @@ val dataSourceModule = module {
                 MIGRATION_46_47,
                 MIGRATION_47_48,
                 MIGRATION_48_49,
+                MIGRATION_49_50,
             )
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onCreate(db: SupportSQLiteDatabase) {
@@ -216,6 +218,7 @@ val dataSourceModule = module {
                 }
 
                 override fun onOpen(db: SupportSQLiteDatabase) {
+                    me.rerere.rikkahub.data.db.migrations.recoverOrphanedDreamSynthesisRuns(db)
                     val dictDir = SimpleDictManager.extractDict(context)
                     val cursor = db.query("SELECT jieba_dict(?)", arrayOf(dictDir.absolutePath))
                     cursor.use {
@@ -429,10 +432,51 @@ val dataSourceModule = module {
         get<AppDatabase>().dreamDao()
     }
 
+    single {
+        get<AppDatabase>().dreamExperienceDao()
+    }
+
+    single {
+        me.rerere.rikkahub.memory.dreaming.experience.RoomDreamExperienceStore(
+            database = get(),
+            dao = get(),
+            legacyDreamDao = get(),
+        )
+    }
+
+    single {
+        me.rerere.rikkahub.memory.dreaming.experience.ConversationEpisodeAdapter(store = get())
+    }
+
+    single {
+        me.rerere.rikkahub.memory.dreaming.experience.DreamMemoryAdapter(
+            memoryDao = get(),
+            store = get(),
+        )
+    }
+
+    single {
+        me.rerere.rikkahub.memory.dreaming.experience.DreamExperienceIngestor(
+            conversationAdapter = get(),
+            memoryAdapter = get(),
+            store = get(),
+            conversationRepository = get(),
+            synthesisCoordinator = get(),
+        )
+    }
+
     // Dormant M4 persistence primitives only; no synthesizer, Worker, or runtime consumer is
     // registered by the schema migration.
     single {
         get<AppDatabase>().dreamSynthesisDao()
+    }
+
+    single {
+        me.rerere.rikkahub.memory.dreaming.runtime.DreamIntrospectionToolProvider(
+            experienceDao = get(),
+            synthesisDao = get(),
+            dreamDao = get(),
+        )
     }
 
     // M2 Observer only replays payload-free epochs locally. It has no model, prompt, provider, or
@@ -445,16 +489,9 @@ val dataSourceModule = module {
     }
     single<DreamSynthesisWorkScheduler> { AndroidDreamSynthesisWorkScheduler(context = get()) }
     single(createdAtStart = true) {
-        val appScope = get<AppScope>()
-        val synthesisCoordinator = get<DreamSynthesisCoordinator>()
         DreamObserverCommitSignal(
             database = get<AppDatabase>(),
             scheduler = get<DreamObserverWorkScheduler>(),
-            synthesisSignal = {
-                appScope.launch(Dispatchers.IO) {
-                    synthesisCoordinator.onAuthorityCommitted()
-                }
-            },
         )
     }
     single {
@@ -477,6 +514,7 @@ val dataSourceModule = module {
         RoomDreamSnapshotProjectionReader(
             database = get(),
             synthesisDao = get(),
+            experienceDao = get(),
         )
     }
     single<DreamInitialSourceTimezoneSource> { DeviceDreamInitialSourceTimezoneSource }
@@ -495,6 +533,7 @@ val dataSourceModule = module {
         RoomDreamSynthesisSchedulingStore(
             database = get(),
             dreamDao = get(),
+            experienceDao = get(),
         )
     }
     single<DreamSynthesisSchedulingStore> { get<RoomDreamSynthesisSchedulingStore>() }
@@ -519,6 +558,7 @@ val dataSourceModule = module {
         RoomDreamSynthesisStore(
             database = get(),
             dreamDao = get(),
+            experienceDao = get(),
             synthesisDao = get(),
             memoryDao = get(),
             memoryV2Dao = get(),
@@ -577,6 +617,7 @@ val dataSourceModule = module {
         RoomDreamReviewStore(
             database = get(),
             dreamDao = get(),
+            experienceDao = get(),
             synthesisDao = get(),
             memoryDao = get(),
             memoryV2Dao = get(),
@@ -594,6 +635,8 @@ val dataSourceModule = module {
         DefaultDreamReviewRepository(
             store = get(),
             authority = get(),
+            experienceStore = get(),
+            synthesisCoordinator = get(),
         )
     }
 

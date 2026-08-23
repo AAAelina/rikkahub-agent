@@ -16,6 +16,7 @@ private const val MAX_NOTIFICATION_HASHES_PER_CONVERSATION = 128
 class DefaultContextBroker(
     private val readers: Map<ContextSource, ContextSourceReader>,
     private val nowMs: () -> Long = System::currentTimeMillis,
+    private val elapsedRealtimeNanos: () -> Long = System::nanoTime,
 ) : ContextBroker {
     private val frozen = ConcurrentHashMap<String, CompletableDeferred<ContextSnapshot>>()
     private val insertionOrder = java.util.concurrent.ConcurrentLinkedQueue<String>()
@@ -80,10 +81,17 @@ class DefaultContextBroker(
         }
         val planned = request.allowedSources intersect enabled
         val collected = mutableListOf<ContextFragment>()
+        val sourceTimings = mutableListOf<ContextSourceTiming>()
 
         for (source in PRIMARY_ORDER) {
             if (source !in planned) continue
-            readSource(request, source, omissions)?.let { fragment ->
+            val startedAtNs = elapsedRealtimeNanos()
+            val fragment = readSource(request, source, omissions)
+            sourceTimings += ContextSourceTiming(
+                source = source,
+                durationNs = (elapsedRealtimeNanos() - startedAtNs).coerceAtLeast(0L),
+            )
+            fragment?.let { fragment ->
                 val filtered = if (source == ContextSource.NOTIFICATIONS) {
                     filterSeenNotifications(request, fragment, omissions)
                 } else {
@@ -104,6 +112,7 @@ class DefaultContextBroker(
                     ContextOmissionReason.UI_TREE_SUFFICIENT,
                 )
             } else {
+                val startedAtNs = elapsedRealtimeNanos()
                 val attempt = withTimeoutOrNull(OCR_TIMEOUT_MS) {
                     OcrAttempt(
                         readSource(
@@ -114,6 +123,10 @@ class DefaultContextBroker(
                         )
                     )
                 }
+                sourceTimings += ContextSourceTiming(
+                    source = ContextSource.OCR_FALLBACK,
+                    durationNs = (elapsedRealtimeNanos() - startedAtNs).coerceAtLeast(0L),
+                )
                 if (attempt == null) {
                     omissions += ContextOmission(
                         ContextSource.OCR_FALLBACK,
@@ -135,6 +148,7 @@ class DefaultContextBroker(
             fragments = budgeted,
             omissions = omissions.distinct(),
             collectedAtMs = nowMs(),
+            sourceTimings = sourceTimings,
         )
     }
 

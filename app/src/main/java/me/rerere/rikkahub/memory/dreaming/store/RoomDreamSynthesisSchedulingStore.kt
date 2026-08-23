@@ -3,8 +3,9 @@ package me.rerere.rikkahub.memory.dreaming.store
 import androidx.room.withTransaction
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.dao.DreamDao
+import me.rerere.rikkahub.data.db.dao.DreamExperienceDao
 import me.rerere.rikkahub.data.db.entity.DreamRunEntity
-import me.rerere.rikkahub.data.db.entity.MemoryScopeStateEntity
+import me.rerere.rikkahub.data.db.entity.DreamExperienceStateEntity
 import me.rerere.rikkahub.memory.dreaming.model.DreamObserverStorageCodec
 import me.rerere.rikkahub.memory.dreaming.model.AuthorityChangeReason
 import me.rerere.rikkahub.memory.dreaming.model.DreamRunFailureCode
@@ -23,16 +24,17 @@ import me.rerere.rikkahub.memory.dreaming.temporal.strictZoneOrNull
 class RoomDreamSynthesisSchedulingStore(
     private val database: AppDatabase,
     private val dreamDao: DreamDao,
+    private val experienceDao: DreamExperienceDao,
 ) : DreamSynthesisSchedulingStore {
     override suspend fun findDirtyScopes(limit: Int): List<DreamSynthesisDirtyScope> {
         require(limit in 1..me.rerere.rikkahub.memory.dreaming.runtime.MAX_DREAM_SYNTHESIS_SCAN_LIMIT)
-        return dreamDao.findSynthesisDirtyScopes(limit).map(MemoryScopeStateEntity::toSchedulingScope)
+        return experienceDao.findSynthesisDirtyStates(limit).map(DreamExperienceStateEntity::toSchedulingScope)
     }
 
     override suspend fun readDirtyScope(scopeId: DreamScopeId): DreamSynthesisDirtyScope? =
-        dreamDao.getScopeState(scopeId.value)?.takeIf {
-            it.lastAppliedMemoryEpoch < it.memoryEpoch &&
-                it.observerCheckpointEpoch == it.memoryEpoch
+        experienceDao.getState(scopeId.value)?.takeIf {
+            it.appliedExperienceEpoch < it.experienceEpoch &&
+                it.observerCheckpointEpoch == it.experienceEpoch
         }?.toSchedulingScope()
 
     override suspend fun ensurePendingRun(
@@ -42,23 +44,23 @@ class RoomDreamSynthesisSchedulingStore(
         // A process death or platform worker stop can leave the durable mirror RUNNING after its
         // lease has expired. Recover those mirrors before evaluating budget/identity so a stale
         // run cannot block every subsequent Dream attempt forever.
-        dreamDao.failExpiredRunMirrors(
+        experienceDao.failExpiredRunMirrors(
             nowMs = request.createdAtMs,
             failureCode = DreamRunFailureCode.LEASE_EXPIRED.name,
         )
-        dreamDao.recoverExpiredScopeLeases(
+        experienceDao.recoverExpiredLeases(
             nowMs = request.createdAtMs,
             reasonCode = AuthorityChangeReason.LEASE_RECOVERED.name,
         )
-        val state = dreamDao.getScopeState(request.scopeId.value)
+        val state = experienceDao.getState(request.scopeId.value)
             ?: return@withTransaction EnsurePendingSynthesisRunResult.ScopeNotDirty
         if (!state.hasValidSchedulingShape()) {
             return@withTransaction EnsurePendingSynthesisRunResult.CorruptState
         }
-        if (state.lastAppliedMemoryEpoch >= state.memoryEpoch) {
+        if (state.appliedExperienceEpoch >= state.experienceEpoch) {
             return@withTransaction EnsurePendingSynthesisRunResult.ScopeNotDirty
         }
-        if (state.observerCheckpointEpoch != state.memoryEpoch) {
+        if (state.observerCheckpointEpoch != state.experienceEpoch) {
             return@withTransaction EnsurePendingSynthesisRunResult.ObserverNotCaughtUp
         }
         val existing = dreamDao.findPendingOrRunningSynthesisRun(request.scopeId.value)
@@ -111,8 +113,8 @@ class RoomDreamSynthesisSchedulingStore(
         if (!allowCreate) {
             return@withTransaction EnsurePendingSynthesisRunResult.CreationDeferred
         }
-        if (dreamDao.countPendingSynthesisRuns() != 0L ||
-            dreamDao.countRunningSynthesisRuns() != 0L
+        if (dreamDao.countPairPendingSynthesisRuns() != 0L ||
+            dreamDao.countPairRunningSynthesisRuns() != 0L
         ) {
             return@withTransaction EnsurePendingSynthesisRunResult.CreationDeferred
         }
@@ -125,9 +127,9 @@ class RoomDreamSynthesisSchedulingStore(
                 scopeId = request.scopeId.value,
                 mode = request.mode.name,
                 status = DreamRunStatus.PENDING.name,
-                baseMemoryEpoch = state.memoryEpoch,
+                baseMemoryEpoch = state.experienceEpoch,
                 baseObserverCheckpointEpoch = state.observerCheckpointEpoch,
-                baseDreamRevision = state.dreamStateRevision,
+                baseDreamRevision = state.profileRevision,
                 checkpointEpoch = state.observerCheckpointEpoch,
                 createdAtMs = request.createdAtMs,
                 updatedAtMs = request.createdAtMs,
@@ -142,10 +144,10 @@ class RoomDreamSynthesisSchedulingStore(
     }
 
     override suspend fun countGlobalPendingRuns(): Int =
-        Math.toIntExact(dreamDao.countPendingSynthesisRuns())
+        Math.toIntExact(dreamDao.countPairPendingSynthesisRuns())
 
     override suspend fun countGlobalRunningRuns(): Int =
-        Math.toIntExact(dreamDao.countRunningSynthesisRuns())
+        Math.toIntExact(dreamDao.countPairRunningSynthesisRuns())
 
     override suspend fun readGlobalUtcUsage(query: DreamDailyUsageQuery): DreamDailyUsage {
         val row = dreamDao.readGlobalDreamDailyUsage(
@@ -171,9 +173,9 @@ class RoomDreamSynthesisSchedulingStore(
             if (running != null && running.leaseOwner != null && running.leaseUntilMs != null &&
                 running.leaseUntilMs > nowMs
             ) {
-                val finished = dreamDao.finishRunMirror(
+                val finished = experienceDao.finishRunMirror(
                     runId = running.runId,
-                    scopeId = scopeId.value,
+                    pairScopeId = scopeId.value,
                     leaseOwner = running.leaseOwner,
                     terminalStatus = DreamRunStatus.CANCELLED.name,
                     failureCode = me.rerere.rikkahub.memory.dreaming.model.DreamRunFailureCode
@@ -182,12 +184,12 @@ class RoomDreamSynthesisSchedulingStore(
                 )
                 if (finished == 1) {
                     check(
-                        dreamDao.releaseScopeLease(
-                            scopeId = scopeId.value,
+                        experienceDao.releaseLease(
+                            pairScopeId = scopeId.value,
                             runId = running.runId,
+                            nowMs = nowMs,
                             reasonCode = me.rerere.rikkahub.memory.dreaming.model.AuthorityChangeReason
                                 .RUN_FINISHED.name,
-                            nowMs = nowMs,
                         ) == 1,
                     ) { "dream_cancel_scope_lease_release_lost" }
                     cancelled += 1
@@ -198,20 +200,20 @@ class RoomDreamSynthesisSchedulingStore(
     }
 }
 
-private fun MemoryScopeStateEntity.toSchedulingScope(): DreamSynthesisDirtyScope =
+private fun DreamExperienceStateEntity.toSchedulingScope(): DreamSynthesisDirtyScope =
     DreamSynthesisDirtyScope(
-        scopeId = checkNotNull(DreamScopeId.parseOrNull(scopeId)) { "dream_scope_corrupt" },
-        memoryEpoch = memoryEpoch,
+        scopeId = checkNotNull(DreamScopeId.parseOrNull(pairScopeId)) { "dream_scope_corrupt" },
+        memoryEpoch = experienceEpoch,
         observerCheckpointEpoch = observerCheckpointEpoch,
-        lastAppliedMemoryEpoch = lastAppliedMemoryEpoch,
-        dreamStateRevision = dreamStateRevision,
+        lastAppliedMemoryEpoch = appliedExperienceEpoch,
+        dreamStateRevision = profileRevision,
         activeRunId = activeRunId,
         activeRunLeaseUntilMs = activeRunLeaseUntilMs,
         updatedAtMs = updatedAtMs,
     )
 
-private fun MemoryScopeStateEntity.hasValidSchedulingShape(): Boolean =
-    memoryEpoch >= 0L && observerCheckpointEpoch in 0L..memoryEpoch &&
-        lastAppliedMemoryEpoch in 0L..memoryEpoch && dreamStateRevision >= 0L &&
+private fun DreamExperienceStateEntity.hasValidSchedulingShape(): Boolean =
+    experienceEpoch >= 0L && observerCheckpointEpoch in 0L..experienceEpoch &&
+        appliedExperienceEpoch in 0L..experienceEpoch && profileRevision >= 0L &&
         (activeRunId == null) == (activeRunLeaseUntilMs == null) &&
         (activeRunLeaseUntilMs == null || activeRunLeaseUntilMs >= 0L) && updatedAtMs >= 0L

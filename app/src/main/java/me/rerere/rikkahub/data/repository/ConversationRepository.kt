@@ -265,6 +265,10 @@ class ConversationRepository(
         } else null
     }
 
+    suspend fun getConversationIdsOfAssistant(assistantId: Uuid): List<Uuid> =
+        conversationDAO.getAllIdsOfAssistant(assistantId.toString())
+            .mapNotNull { raw -> runCatching { Uuid.parse(raw) }.getOrNull() }
+
     suspend fun existsConversationById(uuid: Uuid): Boolean {
         return conversationDAO.existsById(uuid.toString())
     }

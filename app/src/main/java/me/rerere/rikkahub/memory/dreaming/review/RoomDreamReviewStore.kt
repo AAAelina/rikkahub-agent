@@ -17,13 +17,16 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.dao.DreamDao
+import me.rerere.rikkahub.data.db.dao.DreamExperienceDao
 import me.rerere.rikkahub.data.db.dao.DreamReviewSourceRow
 import me.rerere.rikkahub.data.db.dao.DreamSynthesisDao
 import me.rerere.rikkahub.data.db.dao.MemoryDAO
 import me.rerere.rikkahub.data.db.dao.MemoryV2Dao
 import me.rerere.rikkahub.data.db.entity.DreamClaimEntity
+import me.rerere.rikkahub.data.db.entity.DreamClaimExperienceSourceEntity
 import me.rerere.rikkahub.data.db.entity.DreamClaimVersionEntity
 import me.rerere.rikkahub.data.db.entity.DreamClaimVersionSourceEntity
+import me.rerere.rikkahub.data.db.entity.DreamExperienceStateEntity
 import me.rerere.rikkahub.data.db.entity.DreamRunEntity
 import me.rerere.rikkahub.data.db.entity.DreamSnapshotEntity
 import me.rerere.rikkahub.data.db.entity.MemoryEntity
@@ -36,6 +39,8 @@ import me.rerere.rikkahub.memory.MemoryKind
 import me.rerere.rikkahub.memory.MemoryLifecycleStatus
 import me.rerere.rikkahub.memory.MemorySourceIdentity
 import me.rerere.rikkahub.memory.MemoryTruthStatus
+import me.rerere.rikkahub.memory.dreaming.experience.toDreamInputCandidate
+import me.rerere.rikkahub.memory.dreaming.input.DreamInputCandidateOrigin
 import me.rerere.rikkahub.memory.dreaming.model.DREAM_SNAPSHOT_SCHEMA_VERSION
 import me.rerere.rikkahub.memory.dreaming.model.DreamAuthorityFingerprintV1
 import me.rerere.rikkahub.memory.dreaming.model.DreamAuthorityMemory
@@ -48,9 +53,11 @@ import me.rerere.rikkahub.memory.dreaming.model.DreamClaimSourcePin
 import me.rerere.rikkahub.memory.dreaming.model.DreamClaimState
 import me.rerere.rikkahub.memory.dreaming.model.DreamClaimVersionCanonicalV1
 import me.rerere.rikkahub.memory.dreaming.model.DreamEpistemicType
+import me.rerere.rikkahub.memory.dreaming.model.DreamPairScopeId
 import me.rerere.rikkahub.memory.dreaming.model.DreamScopeId
 import me.rerere.rikkahub.memory.dreaming.model.DreamSha256
 import me.rerere.rikkahub.memory.dreaming.model.DreamStorageClass
+import me.rerere.rikkahub.memory.dreaming.model.DreamSubjectKind
 import me.rerere.rikkahub.memory.dreaming.model.DreamSupportType
 import me.rerere.rikkahub.memory.dreaming.model.DreamValidatedClaimVersion
 import me.rerere.rikkahub.memory.dreaming.model.requireCanonicalDreamRunId
@@ -64,6 +71,7 @@ import me.rerere.rikkahub.memory.dreaming.temporal.TemporalState
 class RoomDreamReviewStore(
     private val database: AppDatabase,
     private val dreamDao: DreamDao,
+    private val experienceDao: DreamExperienceDao,
     private val synthesisDao: DreamSynthesisDao,
     private val memoryDao: MemoryDAO,
     private val memoryV2Dao: MemoryV2Dao,
@@ -72,23 +80,43 @@ class RoomDreamReviewStore(
     private val nowEpochMs: () -> Long = System::currentTimeMillis,
 ) : DreamReviewStore {
     override fun observeProjection(scopeId: DreamScopeId): Flow<DreamReviewProjection> =
-        synthesisDao.observeReviewScopeState(scopeId.value)
-            .mapLatest { observed ->
-                val usage = readUsageMode(scopeId)
-                try {
-                    database.withTransaction {
-                        buildProjection(scopeId, usage)
+        if (DreamPairScopeId.parseOrNull(scopeId.value) != null) {
+            experienceDao.observeState(scopeId.value)
+                .mapLatest { observed ->
+                    val usage = readUsageMode(scopeId)
+                    try {
+                        database.withTransaction {
+                            buildProjection(scopeId, usage)
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        invalidProjection(scopeId, observed?.toReviewState(), usage)
                     }
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (_: Exception) {
-                    invalidProjection(scopeId, observed, usage)
                 }
-            }
-            .catch { failure ->
-                if (failure is CancellationException) throw failure
-                emit(invalidProjection(scopeId, null, DreamUsageMode.OFF))
-            }
+                .catch { failure ->
+                    if (failure is CancellationException) throw failure
+                    emit(invalidProjection(scopeId, null, DreamUsageMode.OFF))
+                }
+        } else {
+            synthesisDao.observeReviewScopeState(scopeId.value)
+                .mapLatest { observed ->
+                    val usage = readUsageMode(scopeId)
+                    try {
+                        database.withTransaction {
+                            buildProjection(scopeId, usage)
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        invalidProjection(scopeId, observed, usage)
+                    }
+                }
+                .catch { failure ->
+                    if (failure is CancellationException) throw failure
+                    emit(invalidProjection(scopeId, null, DreamUsageMode.OFF))
+                }
+        }
 
     override suspend fun readClaim(
         target: DreamClaimMutationTarget,
@@ -111,6 +139,15 @@ class RoomDreamReviewStore(
     ): DreamEvidenceRevealResult {
         if (maxChars !in 1..DREAM_EVIDENCE_EXCERPT_MAX_CHARS) {
             return DreamEvidenceRevealResult.Corrupt
+        }
+        if (DreamPairScopeId.parseOrNull(reference.scopeId.value) != null) {
+            return try {
+                database.withTransaction { readPairEvidence(reference, maxChars) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                DreamEvidenceRevealResult.Corrupt
+            }
         }
         return try {
             database.withTransaction {
@@ -287,7 +324,7 @@ class RoomDreamReviewStore(
     override suspend fun clearDerived(
         command: DreamClearDerivedCommand,
     ): DreamReviewStoreMutationResult = mutateOrReject {
-        val state = dreamDao.getScopeState(command.fence.scopeId.value)
+        val state = reviewScopeState(command.fence.scopeId)
             ?: return@mutateOrReject DreamReviewStoreMutationResult.AlreadyClear
         compareFence(state, command.fence)?.let { conflict ->
             return@mutateOrReject DreamReviewStoreMutationResult.Conflict(conflict)
@@ -297,7 +334,18 @@ class RoomDreamReviewStore(
         val hasDerivedState = claimCount > 0 || snapshotCount > 0 || state.activeSnapshotId != null ||
             state.lastAppliedMemoryEpoch != 0L || state.lastFullRebuildAtMs != null
         if (!hasDerivedState) return@mutateOrReject DreamReviewStoreMutationResult.AlreadyClear
-        if (synthesisDao.advanceClearDerivedCas(
+        val cleared = if (DreamPairScopeId.parseOrNull(command.fence.scopeId.value) != null) {
+            experienceDao.advancePairClearDerivedCas(
+                pairScopeId = command.fence.scopeId.value,
+                expectedExperienceEpoch = command.fence.expectedMemoryEpoch,
+                expectedAppliedExperienceEpoch = command.fence.expectedLastAppliedMemoryEpoch,
+                expectedProfileRevision = command.fence.expectedDreamRevision,
+                expectedActiveSnapshotId = command.fence.expectedActiveSnapshotId,
+                reasonCode = REVIEW_CLEAR_REASON,
+                nowMs = command.nowEpochMs,
+            )
+        } else {
+            synthesisDao.advanceClearDerivedCas(
                 scopeId = command.fence.scopeId.value,
                 expectedMemoryEpoch = command.fence.expectedMemoryEpoch,
                 expectedLastAppliedMemoryEpoch = command.fence.expectedLastAppliedMemoryEpoch,
@@ -305,8 +353,9 @@ class RoomDreamReviewStore(
                 expectedActiveSnapshotId = command.fence.expectedActiveSnapshotId,
                 reasonCode = REVIEW_CLEAR_REASON,
                 nowMs = command.nowEpochMs,
-            ) != 1
-        ) {
+            )
+        }
+        if (cleared != 1) {
             abortMutation(classifyFenceMutation(command.fence))
         }
         synthesisDao.deleteDerivedSourcesForScope(command.fence.scopeId.value)
@@ -332,11 +381,14 @@ class RoomDreamReviewStore(
         scopeId: DreamScopeId,
         usageMode: DreamUsageMode,
     ): DreamReviewProjection {
-        val state = dreamDao.getScopeState(scopeId.value)
+        val state = reviewScopeState(scopeId)
             ?: return emptyProjection(scopeId, usageMode)
         val fence = state.toReviewFence(scopeId) ?: return invalidProjection(scopeId, state, usageMode)
         val projectionNowMs = nowEpochMs()
         if (projectionNowMs < 0L) return invalidProjection(scopeId, state, usageMode)
+        if (DreamPairScopeId.parseOrNull(scopeId.value) != null) {
+            return buildPairProjection(scopeId, usageMode, state, fence, projectionNowMs)
+        }
         val claims = synthesisDao.listClaims(scopeId.value, DREAM_REVIEW_MAX_CLAIMS + 1)
         if (claims.size > DREAM_REVIEW_MAX_CLAIMS) return invalidProjection(scopeId, state, usageMode)
         val headVersions = synthesisDao.listReviewHeadVersions(scopeId.value, claims.size + 1)
@@ -462,11 +514,183 @@ class RoomDreamReviewStore(
         )
     }
 
+    /** Pair-Dream provenance is Experience-backed, so the legacy Memory evidence join is skipped. */
+    private suspend fun buildPairProjection(
+        scopeId: DreamScopeId,
+        usageMode: DreamUsageMode,
+        state: MemoryScopeStateEntity,
+        fence: DreamReviewFence,
+        projectionNowMs: Long,
+    ): DreamReviewProjection {
+        val claims = synthesisDao.listClaims(scopeId.value, DREAM_REVIEW_MAX_CLAIMS + 1)
+        if (claims.size > DREAM_REVIEW_MAX_CLAIMS) return invalidProjection(scopeId, state, usageMode)
+        val heads = loadAllHeadsForCompile(scopeId)
+            ?: return invalidProjection(scopeId, state, usageMode)
+        val headById = heads.associateBy(DreamClaimHead::claimId)
+        val summaries = mutableListOf<DreamClaimSummary>()
+        for (claim in claims.sortedBy(DreamClaimEntity::claimId)) {
+            if (claim.state == DreamClaimState.TOMBSTONED.name) continue
+            val head = headById[claim.claimId] ?: return invalidProjection(scopeId, state, usageMode)
+            val sourceCount = synthesisDao.listClaimExperienceSources(claim.claimId, claim.claimRevision).size
+            if (sourceCount > DREAM_REVIEW_MAX_SOURCES_PER_VERSION) {
+                return invalidProjection(scopeId, state, usageMode)
+            }
+            summaries += head.toSummary(sourceCount, null)
+        }
+        val activeHeads = heads.filter { it.state == DreamClaimState.ACTIVE_CONTEXTUAL }
+        var degraded = false
+        val active = state.activeSnapshotId?.let { snapshotId ->
+            synthesisDao.getSnapshot(snapshotId, scopeId.value)
+                ?: return invalidProjection(scopeId, state, usageMode)
+        }
+        if (active != null && !active.matchesProjectionState(state, state.memoryEpoch)) {
+            return invalidProjection(scopeId, state, usageMode)
+        }
+        if (active == null && summaries.isNotEmpty()) degraded = true
+        if (active != null && active.claimCount != activeHeads.size) {
+            return invalidProjection(scopeId, state, usageMode)
+        }
+        if (active != null) {
+            val expected = try {
+                DreamSnapshotCompiler.compile(
+                    DreamSnapshotCompileRequest(
+                        scopeId = scopeId,
+                        compilerRevision = active.compilerRevision,
+                        claims = activeHeads,
+                    ),
+                )
+            } catch (_: Exception) {
+                return invalidProjection(scopeId, state, usageMode)
+            }
+            if (active.canonicalPayloadJson != expected.payloadJson ||
+                active.payloadSha256 != expected.payloadHash.value ||
+                active.claimCount != expected.claimCount ||
+                active.estimatedTokens != expected.estimatedTokens
+            ) {
+                return invalidProjection(scopeId, state, usageMode)
+            }
+        }
+        val superseded = active?.supersedesSnapshotId?.let { previousId ->
+            synthesisDao.getSnapshot(previousId, scopeId.value)
+                ?: return invalidProjection(scopeId, state, usageMode)
+        }
+        if (superseded != null && superseded.status != SNAPSHOT_SUPERSEDED) {
+            return invalidProjection(scopeId, state, usageMode)
+        }
+        val diff = snapshotDiff(scopeId, superseded, active)
+        if (diff is DreamSnapshotDiffResult.Unavailable) {
+            return invalidProjection(scopeId, state, usageMode, diff)
+        }
+        if (active != null && active.manifestReferencesOrNull() !=
+            activeHeads.map { head -> head.claimId to head.revision }.toSet()
+        ) {
+            return invalidProjection(scopeId, state, usageMode)
+        }
+        val runs = dreamDao.listRecentRuns(scopeId.value, DREAM_REVIEW_MAX_RECENT_RUNS + 1)
+        if (runs.size > DREAM_REVIEW_MAX_RECENT_RUNS || !runsAreConsistent(state, runs)) {
+            return invalidProjection(scopeId, state, usageMode, diff)
+        }
+        val hasLiveRun = state.activeRunId != null &&
+            state.activeRunLeaseUntilMs?.let { leaseUntil -> leaseUntil > projectionNowMs } == true
+        if (state.activeRunId != null && !hasLiveRun) degraded = true
+        val empty = summaries.isEmpty() && active == null && state.activeRunId == null
+        val status = when {
+            hasLiveRun -> DreamDerivedStatus.RUNNING
+            state.memoryEpoch != state.lastAppliedMemoryEpoch -> DreamDerivedStatus.DIRTY
+            degraded -> DreamDerivedStatus.DEGRADED
+            empty -> DreamDerivedStatus.EMPTY
+            else -> DreamDerivedStatus.READY
+        }
+        val runSummaries = runs.mapNotNull(DreamRunEntity::toUsageSummaryOrNull)
+        if (runSummaries.size != runs.size) return invalidProjection(scopeId, state, usageMode, diff)
+        val activeSummary = active?.toSummary()
+        if (active != null && activeSummary == null) return invalidProjection(scopeId, state, usageMode, diff)
+        val supersededSummary = superseded?.toSummary()
+        if (superseded != null && supersededSummary == null) {
+            return invalidProjection(scopeId, state, usageMode, diff)
+        }
+        val pairState = experienceDao.getState(scopeId.value)
+            ?: return invalidProjection(scopeId, state, usageMode, diff)
+        return DreamReviewProjection(
+            fence = fence,
+            derivedStatus = status,
+            usageMode = usageMode,
+            claims = summaries,
+            activeSnapshot = activeSummary,
+            supersededSnapshot = supersededSummary,
+            snapshotDiff = diff,
+            recentRuns = runSummaries,
+            pendingExperienceCount = experienceDao.countPending(
+                scopeId.value,
+                pairState.appliedExperienceEpoch,
+            ),
+            experienceDebt = pairState.experienceDebt,
+        )
+    }
+
     private suspend fun readClaimDetail(
         claim: DreamClaimEntity,
         target: DreamClaimMutationTarget,
     ): DreamReviewReadResult<DreamClaimDetail> {
         if (claim.state == DreamClaimState.TOMBSTONED.name) return DreamReviewReadResult.InvalidState
+        if (DreamPairScopeId.parseOrNull(target.fence.scopeId.value) != null) {
+            val head = claim.toPairHead(target.fence.scopeId) ?: return DreamReviewReadResult.Corrupt
+            val version = synthesisDao.getClaimVersion(claim.claimId, claim.claimRevision)
+                ?: return DreamReviewReadResult.Corrupt
+            val pairSources = synthesisDao.listClaimExperienceSources(claim.claimId, claim.claimRevision)
+            if (pairSources.size > DREAM_REVIEW_MAX_SOURCES_PER_VERSION) return DreamReviewReadResult.Corrupt
+            val evidence = pairSources.map { source ->
+                val experience = experienceDao.getExperience(source.experienceId, target.fence.scopeId.value)
+                    ?: return DreamReviewReadResult.Corrupt
+                val candidate = experience.toDreamInputCandidate(
+                    scopeId = target.fence.scopeId,
+                    origin = DreamInputCandidateOrigin.AUTHORITY_CHANGE,
+                    json = json,
+                ) ?: return DreamReviewReadResult.Corrupt
+                if (source.experienceEpoch != experience.experienceEpoch ||
+                    source.contentDigest != experience.contentDigest ||
+                    source.sourceManifestHash != candidate.pin.expectedSourceManifestHash.value
+                ) return DreamReviewReadResult.Corrupt
+                DreamEvidenceSummary(
+                    reference = DreamEvidenceReference(
+                        scopeId = target.fence.scopeId,
+                        claimId = claim.claimId,
+                        claimRevision = claim.claimRevision,
+                        memoryId = experience.experienceId,
+                        memoryRevision = experience.experienceEpoch,
+                        expectedSemanticHash = candidate.pin.expectedAuthorityFingerprint,
+                        expectedSourceManifestHash = candidate.pin.expectedSourceManifestHash,
+                        supportType = runCatching { enumValueOf<DreamSupportType>(source.supportType) }.getOrNull()
+                            ?: return DreamReviewReadResult.Corrupt,
+                    ),
+                    validity = DreamEvidenceValidity.VALID,
+                    sourceKind = experience.sourceKind,
+                    qualityCode = experience.experienceKind,
+                    excerptAvailable = true,
+                )
+            }
+            return DreamReviewReadResult.Found(
+                DreamClaimDetail(
+                    target = target,
+                    summary = head.toSummary(pairSources.size, null),
+                    storageClass = head.storageClass,
+                    epistemicType = head.epistemicType,
+                    versions = listOf(
+                        DreamClaimVersionSummary(
+                            revision = head.revision,
+                            state = head.state,
+                            confidencePermille = head.confidencePermille,
+                            temporalState = head.temporalState,
+                            validFromEpochMs = head.validFromEpochMs,
+                            validToEpochMs = head.validToEpochMs,
+                            reasonCode = version.reasonCode,
+                            createdAtEpochMs = version.createdAtMs,
+                        ),
+                    ),
+                    evidence = evidence,
+                ),
+            )
+        }
         val versions = synthesisDao.listReviewClaimVersions(
             claimId = claim.claimId,
             scopeId = target.fence.scopeId.value,
@@ -545,7 +769,25 @@ class RoomDreamReviewStore(
         reason: String,
     ): DreamReviewStoreMutationResult {
         val canonical = DreamClaimVersionCanonicalV1.encode(nextVersion)
-        if (synthesisDao.advanceClaimForUserReviewCas(
+        val pairScope = DreamPairScopeId.parseOrNull(target.fence.scopeId.value) != null
+        val claimAdvanced = if (pairScope) {
+            experienceDao.advanceClaimForPairUserReviewCas(
+                pairScopeId = target.fence.scopeId.value,
+                claimId = target.claimId,
+                expectedClaimRevision = target.expectedClaimRevision,
+                nextClaimRevision = nextVersion.nextRevision,
+                currentExperienceEpoch = currentMemoryEpoch,
+                expectedAppliedExperienceEpoch = target.fence.expectedLastAppliedMemoryEpoch,
+                expectedProfileRevision = target.fence.expectedDreamRevision,
+                expectedActiveSnapshotId = target.fence.expectedActiveSnapshotId,
+                nextState = nextVersion.nextState.name,
+                claimHash = canonical.contentHash.value,
+                mutationId = mutationId,
+                reasonCode = reason,
+                nowMs = nowMs,
+            )
+        } else {
+            synthesisDao.advanceClaimForUserReviewCas(
                 scopeId = target.fence.scopeId.value,
                 claimId = target.claimId,
                 expectedClaimRevision = target.expectedClaimRevision,
@@ -559,8 +801,9 @@ class RoomDreamReviewStore(
                 mutationId = mutationId,
                 reasonCode = reason,
                 nowMs = nowMs,
-            ) != 1
-        ) {
+            )
+        }
+        if (claimAdvanced != 1) {
             abortMutation(classifyTargetMutation(target, currentMemoryEpoch))
         }
         synthesisDao.insertClaimVersion(
@@ -575,7 +818,31 @@ class RoomDreamReviewStore(
                 createdAtMs = nowMs,
             ),
         )
-        synthesisDao.insertClaimVersionSources(sourceRows)
+        if (pairScope) {
+            synthesisDao.insertClaimExperienceSources(
+                nextVersion.sources.map { source ->
+                    val experience = experienceDao.getExperience(
+                        source.authority.memoryId,
+                        target.fence.scopeId.value,
+                    ) ?: abortMutation(DreamReviewStoreMutationResult.Corrupt)
+                    if (experience.experienceEpoch != source.authority.expectedRevision) {
+                        abortMutation(DreamReviewStoreMutationResult.Conflict(DreamReviewConflict.MEMORY_EPOCH))
+                    }
+                    DreamClaimExperienceSourceEntity(
+                        claimId = nextVersion.claimId,
+                        claimRevision = nextVersion.nextRevision,
+                        experienceId = experience.experienceId,
+                        experienceEpoch = experience.experienceEpoch,
+                        contentDigest = experience.contentDigest,
+                        sourceManifestHash = source.authority.expectedSourceManifestHash.value,
+                        supportType = source.supportType.name,
+                        createdAtMs = nowMs,
+                    )
+                },
+            )
+        } else {
+            synthesisDao.insertClaimVersionSources(sourceRows)
+        }
         val heads = loadAllHeadsForCompile(target.fence.scopeId)
             ?: abortMutation(DreamReviewStoreMutationResult.Corrupt)
         val previous = target.fence.expectedActiveSnapshotId?.let { snapshotId ->
@@ -622,7 +889,20 @@ class RoomDreamReviewStore(
                 abortMutation(DreamReviewStoreMutationResult.Conflict(DreamReviewConflict.ACTIVE_SNAPSHOT))
             }
         }
-        if (synthesisDao.advanceUserReviewSnapshotCas(
+        val snapshotAdvanced = if (pairScope) {
+            experienceDao.advancePairUserReviewSnapshotCas(
+                pairScopeId = target.fence.scopeId.value,
+                currentExperienceEpoch = currentMemoryEpoch,
+                expectedAppliedExperienceEpoch = target.fence.expectedLastAppliedMemoryEpoch,
+                expectedProfileRevision = target.fence.expectedDreamRevision,
+                expectedActiveSnapshotId = target.fence.expectedActiveSnapshotId,
+                newSnapshotId = mutationId,
+                mutationId = mutationId,
+                reasonCode = reason,
+                nowMs = nowMs,
+            )
+        } else {
+            synthesisDao.advanceUserReviewSnapshotCas(
                 scopeId = target.fence.scopeId.value,
                 currentMemoryEpoch = currentMemoryEpoch,
                 expectedLastAppliedMemoryEpoch = target.fence.expectedLastAppliedMemoryEpoch,
@@ -632,8 +912,9 @@ class RoomDreamReviewStore(
                 mutationId = mutationId,
                 reasonCode = reason,
                 nowMs = nowMs,
-            ) != 1
-        ) {
+            )
+        }
+        if (snapshotAdvanced != 1) {
             abortMutation(classifyTargetMutation(target, currentMemoryEpoch))
         }
         return DreamReviewStoreMutationResult.Applied(
@@ -651,6 +932,12 @@ class RoomDreamReviewStore(
         claim: DreamClaimEntity,
         scopeId: DreamScopeId,
     ): LoadedClaim? {
+        if (DreamPairScopeId.parseOrNull(scopeId.value) != null) {
+            return LoadedClaim(
+                head = claim.toPairHead(scopeId) ?: return null,
+                sourceRows = emptyList(),
+            )
+        }
         val version = synthesisDao.getClaimVersion(claim.claimId, claim.claimRevision) ?: return null
         val rows = synthesisDao.listReviewSourceRows(
             scopeId = scopeId.value,
@@ -668,6 +955,12 @@ class RoomDreamReviewStore(
     private suspend fun loadAllHeadsForCompile(scopeId: DreamScopeId): List<DreamClaimHead>? {
         val claims = synthesisDao.listClaims(scopeId.value, DREAM_REVIEW_MAX_CLAIMS + 1)
         if (claims.size > DREAM_REVIEW_MAX_CLAIMS) return null
+        if (DreamPairScopeId.parseOrNull(scopeId.value) != null) {
+            return claims.mapNotNull { claim ->
+                if (claim.state == DreamClaimState.TOMBSTONED.name) return@mapNotNull null
+                claim.toPairHead(scopeId) ?: return null
+            }
+        }
         val versions = synthesisDao.listReviewHeadVersions(scopeId.value, claims.size + 1)
         if (versions.size != claims.size) return null
         val rows = synthesisDao.listReviewSourceRows(
@@ -686,6 +979,60 @@ class RoomDreamReviewStore(
             val parsed = parseVersion(versionsByClaim[claim.claimId] ?: return null, claimRows, scopeId)
                 ?: return null
             parsed.toHead(scopeId).takeIf(claim::matches) ?: return null
+        }
+    }
+
+    private suspend fun DreamClaimEntity.toPairHead(scopeId: DreamScopeId): DreamClaimHead? {
+        val parsedState = runCatching { enumValueOf<DreamClaimState>(state) }.getOrNull() ?: return null
+        val sources = if (parsedState == DreamClaimState.TOMBSTONED) {
+            emptyList()
+        } else {
+            synthesisDao.listClaimExperienceSources(claimId, claimRevision).map { source ->
+                val experience = experienceDao.getExperience(source.experienceId, scopeId.value)
+                    ?: return null
+                if (experience.experienceEpoch != source.experienceEpoch ||
+                    experience.contentDigest != source.contentDigest
+                ) return null
+                val candidate = experience.toDreamInputCandidate(
+                    scopeId = scopeId,
+                    origin = DreamInputCandidateOrigin.AUTHORITY_CHANGE,
+                    json = json,
+                ) ?: return null
+                if (candidate.pin.expectedSourceManifestHash.value != source.sourceManifestHash) return null
+                DreamClaimSourcePin(
+                    authority = candidate.pin,
+                    supportType = runCatching { enumValueOf<DreamSupportType>(source.supportType) }.getOrNull()
+                        ?: return null,
+                    directAuthority = true,
+                )
+            }
+        }
+        val confidencePermille = (confidence * 1_000.0).roundToInt()
+        if (confidencePermille !in 0..1_000) return null
+        return try {
+            DreamClaimHead(
+                claimId = claimId,
+                scopeId = scopeId,
+                revision = claimRevision,
+                claimKey = claimKey,
+                storageClass = enumValueOf(storageClass),
+                epistemicType = enumValueOf(epistemicType),
+                state = parsedState,
+                title = title,
+                statement = statement,
+                confidencePermille = confidencePermille,
+                temporalState = enumValueOf(temporalState),
+                validFromEpochMs = validFromMs,
+                validToEpochMs = validToMs,
+                versionHash = DreamSha256(claimHash),
+                sources = sources,
+                subjectKind = enumValueOf(subjectKind),
+                profileSection = profileSection,
+                epistemicOrigin = enumValueOf(epistemicOrigin),
+                contentType = enumValueOf(contentType),
+            )
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -710,6 +1057,45 @@ class RoomDreamReviewStore(
             expectedRevision = memory.revision.toLong(),
             expectedAuthorityFingerprint = DreamAuthorityFingerprintV1.compute(authority),
             expectedSourceManifestHash = DreamAuthorityFingerprintV1.sourceManifestHash(authority.sources),
+        )
+    }
+
+    private suspend fun readPairEvidence(
+        reference: DreamEvidenceReference,
+        maxChars: Int,
+    ): DreamEvidenceRevealResult {
+        val source = synthesisDao.listClaimExperienceSources(reference.claimId, reference.claimRevision)
+            .firstOrNull { row ->
+                row.experienceId == reference.memoryId &&
+                    row.experienceEpoch == reference.memoryRevision &&
+                    row.supportType == reference.supportType.name
+            } ?: return DreamEvidenceRevealResult.NotFound
+        val experience = experienceDao.getExperience(source.experienceId, reference.scopeId.value)
+            ?: return DreamEvidenceRevealResult.NotFound
+        val candidate = experience.toDreamInputCandidate(
+            scopeId = reference.scopeId,
+            origin = DreamInputCandidateOrigin.AUTHORITY_CHANGE,
+            json = json,
+        ) ?: return DreamEvidenceRevealResult.Invalid(DreamEvidenceValidity.CORRUPT)
+        val validity = when {
+            experience.status == "DISCARDED" -> DreamEvidenceValidity.TOMBSTONED
+            experience.experienceEpoch != reference.memoryRevision -> DreamEvidenceValidity.REVISION_CHANGED
+            experience.contentDigest != source.contentDigest -> DreamEvidenceValidity.SEMANTIC_HASH_MISMATCH
+            candidate.pin.expectedAuthorityFingerprint != reference.expectedSemanticHash ->
+                DreamEvidenceValidity.SEMANTIC_HASH_MISMATCH
+            candidate.pin.expectedSourceManifestHash != reference.expectedSourceManifestHash ||
+                candidate.pin.expectedSourceManifestHash.value != source.sourceManifestHash ->
+                DreamEvidenceValidity.SOURCE_MANIFEST_MISMATCH
+            else -> DreamEvidenceValidity.VALID
+        }
+        if (validity != DreamEvidenceValidity.VALID) return DreamEvidenceRevealResult.Invalid(validity)
+        val text = experience.summary
+        return DreamEvidenceRevealResult.Revealed(
+            DreamEvidenceExcerpt(
+                reference = reference,
+                text = text.take(maxChars),
+                truncated = text.length > maxChars,
+            ),
         )
     }
 
@@ -830,7 +1216,7 @@ class RoomDreamReviewStore(
         target: DreamClaimMutationTarget,
         currentMemoryEpoch: Long,
     ): TargetLookup {
-        val state = dreamDao.getScopeState(target.fence.scopeId.value)
+        val state = reviewScopeState(target.fence.scopeId)
             ?: return TargetLookup.Rejected(DreamReviewStoreMutationResult.NotFound)
         compareFence(state, target.fence, currentMemoryEpoch)?.let { conflict ->
             return TargetLookup.Rejected(DreamReviewStoreMutationResult.Conflict(conflict))
@@ -861,12 +1247,19 @@ class RoomDreamReviewStore(
     private suspend fun classifyFenceMutation(
         fence: DreamReviewFence,
     ): DreamReviewStoreMutationResult {
-        val state = dreamDao.getScopeState(fence.scopeId.value)
+        val state = reviewScopeState(fence.scopeId)
             ?: return DreamReviewStoreMutationResult.NotFound
         val conflict = compareFence(state, fence)
         return if (conflict == null) DreamReviewStoreMutationResult.Corrupt
         else DreamReviewStoreMutationResult.Conflict(conflict)
     }
+
+    private suspend fun reviewScopeState(scopeId: DreamScopeId): MemoryScopeStateEntity? =
+        if (DreamPairScopeId.parseOrNull(scopeId.value) != null) {
+            experienceDao.getState(scopeId.value)?.toReviewState()
+        } else {
+            dreamDao.getScopeState(scopeId.value)
+        }
 
     private suspend fun mutateOrReject(
         block: suspend () -> DreamReviewStoreMutationResult,
@@ -981,6 +1374,21 @@ private fun MemoryScopeStateEntity.toReviewFence(scopeId: DreamScopeId): DreamRe
     null
 }
 
+/** Reuses the mature review projection/fence machinery with Pair-Dream's independent clock. */
+private fun DreamExperienceStateEntity.toReviewState() = MemoryScopeStateEntity(
+    scopeId = pairScopeId,
+    memoryEpoch = experienceEpoch,
+    observerCheckpointEpoch = observerCheckpointEpoch,
+    activeRunId = activeRunId,
+    activeRunLeaseUntilMs = activeRunLeaseUntilMs,
+    updatedAtMs = updatedAtMs,
+    lastReasonCode = lastReasonCode,
+    dreamStateRevision = profileRevision,
+    lastAppliedMemoryEpoch = appliedExperienceEpoch,
+    activeSnapshotId = activeSnapshotId,
+    lastFullRebuildAtMs = null,
+)
+
 private fun emptyProjection(scopeId: DreamScopeId, usageMode: DreamUsageMode) = DreamReviewProjection(
     fence = DreamReviewFence(scopeId, 0L, 0L, 0L, null),
     derivedStatus = DreamDerivedStatus.EMPTY,
@@ -1074,6 +1482,11 @@ private fun DreamClaimHead.toSummary(
 )
 
 private fun DreamClaimHead.reviewSection(): DreamSnapshotSection = when {
+    DreamPairScopeId.parseOrNull(scopeId.value) != null -> when (subjectKind) {
+        DreamSubjectKind.USER -> DreamSnapshotSection.ABOUT_USER
+        DreamSubjectKind.ASSISTANT -> DreamSnapshotSection.ABOUT_ASSISTANT
+        DreamSubjectKind.RELATIONSHIP -> DreamSnapshotSection.ABOUT_RELATIONSHIP
+    }
     epistemicType == DreamEpistemicType.PROJECT_STATE -> DreamSnapshotSection.CURRENT_PROJECTS
     epistemicType == DreamEpistemicType.PLAN -> DreamSnapshotSection.ACTIVE_PLANS
     epistemicType == DreamEpistemicType.CONSTRAINT -> DreamSnapshotSection.ACTIVE_CONSTRAINTS
