@@ -11,6 +11,7 @@ import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.MemorySourceTombstoneEntity
 import me.rerere.rikkahub.data.db.entity.MessageNodeEntity
 import me.rerere.rikkahub.memory.MemorySourceKind
+import me.rerere.rikkahub.memory.dreaming.model.DreamPairScopeId
 import me.rerere.rikkahub.memory.isValidMemoryScopeBinding
 import me.rerere.rikkahub.memory.memoryCaptureSourcesForMessage
 import me.rerere.rikkahub.memory.memorySourceTextDigest
@@ -105,7 +106,12 @@ class RoomDreamSourceReader(
         }
         val conversation = snapshot.conversation
             ?: return UnbudgetedRead.Unavailable(DreamSourceUnavailableReason.MISSING)
-        if (!isValidMemoryScopeBinding(locator.scopeId.value, conversation.assistantId)) {
+        val validScope = DreamPairScopeId.parseOrNull(locator.scopeId.value)?.let { pair ->
+            runCatching { kotlin.uuid.Uuid.parse(conversation.assistantId) }
+                .getOrNull()
+                ?.let(DreamPairScopeId::forAssistant) == pair
+        } ?: isValidMemoryScopeBinding(locator.scopeId.value, conversation.assistantId)
+        if (!validScope) {
             return UnbudgetedRead.Unavailable(DreamSourceUnavailableReason.SCOPE_MISMATCH)
         }
 

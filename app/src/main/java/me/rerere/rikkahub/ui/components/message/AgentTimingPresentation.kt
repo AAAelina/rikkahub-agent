@@ -5,6 +5,7 @@ import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingEventKind
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingConversationSnapshot
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingResponseMode
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingRoundSnapshot
+import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingStreamProgressSnapshot
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingToolSnapshot
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingTraceSnapshot
 import java.util.Locale
@@ -27,7 +28,9 @@ internal data class AgentTimingSummaryPresentation(
 
 internal enum class AgentTimingMetricKind {
     ADMISSION,
+    RUN_PREFLIGHT,
     MEMORY_RETRIEVAL,
+    AUTO_CONTEXT,
     TOOL_SURFACE,
     MCP_DISCOVERY,
     CONTEXT,
@@ -47,6 +50,7 @@ internal enum class AgentTimingMetricKind {
     MEMORY_LAST_ACCESS,
     PROVIDER_PREPARE,
     FIRST_PROGRESS,
+    FIRST_TEXT,
     FULL_RESPONSE,
     PROVIDER_TOTAL,
     TOOL_BATCH,
@@ -57,6 +61,10 @@ internal enum class AgentTimingMetricKind {
     HUMAN_WAIT,
     APPROVAL_RESOLUTION,
     FINAL_SAVE,
+    GENERATION_DONE_NOTIFY,
+    POST_PROVIDER_PROCESSING,
+    RUN_COMPLETION_DRAIN,
+    RUNTIME_FINALIZATION,
 }
 
 internal enum class AgentTimingSectionKind {
@@ -92,6 +100,21 @@ internal data class AgentTimingRoundPresentation(
     val attemptIndex: Int,
     val responseMode: AgentTimingResponseMode,
     val sections: List<AgentTimingSectionPresentation>,
+    val providerStats: AgentTimingProviderStatsPresentation? = null,
+)
+
+internal data class AgentTimingProviderStatsPresentation(
+    val outputTokens: Int,
+    val decodeTps: Double?,
+    val providerVisible: AgentTimingStreamStatsPresentation? = null,
+    val sessionVisible: AgentTimingStreamStatsPresentation? = null,
+    val uiVisible: AgentTimingStreamStatsPresentation? = null,
+)
+
+internal data class AgentTimingStreamStatsPresentation(
+    val estimatedTokens: Long,
+    val sampleCount: Long,
+    val tps: Double?,
 )
 
 internal data class AgentTimingDetailPresentation(
@@ -152,14 +175,36 @@ internal fun buildAgentTimingSummary(
 internal fun buildAgentTimingDetail(
     trace: AgentTimingTraceSnapshot,
 ): AgentTimingDetailPresentation {
+    val preflightEndAtNs = trace.at(AgentTimingEventKind.MEMORY_RETRIEVAL_STARTED)
+        ?: trace.at(AgentTimingEventKind.TOOL_SURFACE_STARTED)
+    val lastProviderFinishedAtNs = trace.rounds
+        .mapNotNull { round -> round.at(AgentTimingEventKind.PROVIDER_STREAM_FINISHED) }
+        .maxOrNull()
+    val finalSaveStartedAtNs = trace.at(AgentTimingEventKind.FINAL_SAVE_STARTED)
+    val finalSaveFinishedAtNs = trace.at(AgentTimingEventKind.FINAL_SAVE_FINISHED)
+    val runEndedAtNs = trace.at(AgentTimingEventKind.RUN_ENDED)
     val overview = buildList {
         section(
             AgentTimingSectionKind.OVERVIEW,
             metric(trace, AgentTimingMetricKind.ADMISSION, AgentTimingEventKind.UI_SUBMITTED, AgentTimingEventKind.RUN_STARTED),
+            durationOrNull(trace.at(AgentTimingEventKind.RUN_STARTED), preflightEndAtNs)?.let {
+                AgentTimingMetricPresentation(AgentTimingMetricKind.RUN_PREFLIGHT, it)
+            },
             metric(trace, AgentTimingMetricKind.MEMORY_RETRIEVAL, AgentTimingEventKind.MEMORY_RETRIEVAL_STARTED, AgentTimingEventKind.MEMORY_RETRIEVAL_FINISHED),
+            metric(trace, AgentTimingMetricKind.AUTO_CONTEXT, AgentTimingEventKind.AUTO_CONTEXT_STARTED, AgentTimingEventKind.AUTO_CONTEXT_FINISHED),
             metric(trace, AgentTimingMetricKind.TOOL_SURFACE, AgentTimingEventKind.TOOL_SURFACE_STARTED, AgentTimingEventKind.TOOL_SURFACE_FINISHED),
             metric(trace, AgentTimingMetricKind.MCP_DISCOVERY, AgentTimingEventKind.MCP_DISCOVERY_STARTED, AgentTimingEventKind.MCP_DISCOVERY_FINISHED),
+            durationOrNull(lastProviderFinishedAtNs, finalSaveStartedAtNs)?.let {
+                AgentTimingMetricPresentation(AgentTimingMetricKind.POST_PROVIDER_PROCESSING, it)
+            },
             metric(trace, AgentTimingMetricKind.FINAL_SAVE, AgentTimingEventKind.FINAL_SAVE_STARTED, AgentTimingEventKind.FINAL_SAVE_FINISHED),
+            metric(trace, AgentTimingMetricKind.GENERATION_DONE_NOTIFY, AgentTimingEventKind.GENERATION_DONE_NOTIFY_STARTED, AgentTimingEventKind.GENERATION_DONE_NOTIFY_FINISHED),
+            durationOrNull(finalSaveFinishedAtNs, runEndedAtNs)?.let {
+                AgentTimingMetricPresentation(AgentTimingMetricKind.RUN_COMPLETION_DRAIN, it)
+            },
+            durationOrNull(runEndedAtNs, trace.finishedAtNs)?.let {
+                AgentTimingMetricPresentation(AgentTimingMetricKind.RUNTIME_FINALIZATION, it)
+            },
         )
         section(
             AgentTimingSectionKind.APPROVAL,
@@ -261,6 +306,9 @@ internal fun buildAgentTimingDetail(
                             it,
                         )
                     },
+                    round.firstTextNs?.let {
+                        AgentTimingMetricPresentation(AgentTimingMetricKind.FIRST_TEXT, it)
+                    },
                     round.providerTotalDurationNs()?.let {
                         AgentTimingMetricPresentation(AgentTimingMetricKind.PROVIDER_TOTAL, it)
                     },
@@ -273,6 +321,7 @@ internal fun buildAgentTimingDetail(
                     },
                 )
             },
+            providerStats = round.providerStats(),
         )
     }
 
@@ -425,6 +474,36 @@ private fun AgentTimingRoundSnapshot.providerTotalDurationNs(): Long? {
         AgentTimingEventKind.PROVIDER_ATTEMPT_TERMINAL,
     )
     return durationOrNull(start, end)
+}
+
+private fun AgentTimingRoundSnapshot.providerStats(): AgentTimingProviderStatsPresentation? {
+    val output = completionTokens?.takeIf { it > 0 } ?: return null
+    val decodeNs = durationNs(
+        AgentTimingEventKind.PROVIDER_FIRST_PROGRESS,
+        AgentTimingEventKind.PROVIDER_STREAM_FINISHED,
+    )
+    val decodeTps = decodeNs
+        ?.takeIf { it > 0L }
+        ?.let { output.toDouble() * 1_000_000_000.0 / it.toDouble() }
+    return AgentTimingProviderStatsPresentation(
+        outputTokens = output,
+        decodeTps = decodeTps,
+        providerVisible = providerVisibleStream.presentation(),
+        sessionVisible = sessionVisibleStream.presentation(),
+        uiVisible = uiVisibleStream.presentation(),
+    )
+}
+
+private fun AgentTimingStreamProgressSnapshot.presentation(): AgentTimingStreamStatsPresentation? {
+    if (estimatedTokens <= 0L || sampleCount <= 0L) return null
+    val tps = durationNs
+        ?.takeIf { it > 0L }
+        ?.let { estimatedTokens.toDouble() * 1_000_000_000.0 / it.toDouble() }
+    return AgentTimingStreamStatsPresentation(
+        estimatedTokens = estimatedTokens,
+        sampleCount = sampleCount,
+        tps = tps,
+    )
 }
 
 private fun AgentTimingRoundSnapshot.earliest(vararg kinds: AgentTimingEventKind): Long? =

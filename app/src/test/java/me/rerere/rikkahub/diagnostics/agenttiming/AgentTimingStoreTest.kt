@@ -104,6 +104,31 @@ class AgentTimingStoreTest {
     }
 
     @Test
+    fun `round usage is retained with the provider attempt`() {
+        val clock = FakeClock()
+        val store = AgentTimingStore(clock)
+        val conversationId = Uuid.random()
+        store.setEnabled(true)
+        val handle = store.beginSubmission(conversationId)!!.handle
+        val round = handle.beginRound(providerCallIndex = 0)!!
+
+        assertTrue(
+            handle.updateRoundUsage(
+                round = round,
+                promptTokens = 120,
+                completionTokens = 45,
+                cachedTokens = 80,
+            ),
+        )
+        handle.checkpoint(AgentTimingEventKind.PROVIDER_STREAM_FINISHED, round)
+
+        val stored = store.conversationFlow(conversationId).value.traces.single().rounds.single()
+        assertEquals(120, stored.promptTokens)
+        assertEquals(45, stored.completionTokens)
+        assertEquals(80, stored.cachedTokens)
+    }
+
+    @Test
     fun `terminal limits evict oldest terminal traces but pin active traces`() {
         val clock = FakeClock()
         val store = AgentTimingStore(

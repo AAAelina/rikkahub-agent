@@ -131,25 +131,19 @@ class MemoryCenterVM(
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
-    val dreamProjection = scopeId
-        .flatMapLatest { rawScope ->
-            val typedScope = requireNotNull(DreamScopeId.parseOrNull(rawScope))
-            dreamReviewRepository.observeScope(typedScope)
-                .map<DreamReviewProjection, DreamReviewProjection?> { it }
-                .catch { error ->
-                    if (error is CancellationException) throw error
-                    emit(null)
-                }
+    private val pairDreamScopeId = DreamScopeId.pairScope(assistantId)
+
+    val dreamProjection = dreamReviewRepository.observeScope(pairDreamScopeId)
+        .map<DreamReviewProjection, DreamReviewProjection?> { it }
+        .catch { error ->
+            if (error is CancellationException) throw error
+            emit(null)
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
-    val dreamingScopePreferences = combine(
-        scopeId,
-        settingsStore.settingsFlow,
-    ) { rawScope, settings ->
-        val typedScope = requireNotNull(DreamScopeId.parseOrNull(rawScope))
-        settings.dreamingPreferences.forScope(typedScope)
-    }.stateIn(
+    val dreamingScopePreferences = settingsStore.settingsFlow
+        .map { settings -> settings.dreamingPreferences.forScope(pairDreamScopeId) }
+        .stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
         DreamingScopePreferences(),
@@ -750,6 +744,7 @@ class MemoryCenterVM(
             }
             lastActionMessage.value = result.toDreamActionMessage()
             if (result is DreamCorrectionResult.Applied ||
+                result is DreamCorrectionResult.PairApplied ||
                 result is DreamCorrectionResult.AuthorityAppliedRebuildPending
             ) {
                 closeDreamClaim()
@@ -808,8 +803,7 @@ class MemoryCenterVM(
         }
     }
 
-    private fun currentDreamScopeId(): DreamScopeId =
-        requireNotNull(DreamScopeId.parseOrNull(currentCommandScopeId()))
+    private fun currentDreamScopeId(): DreamScopeId = pairDreamScopeId
 
     companion object {
         const val MIN_IDLE_MINUTES = 1
@@ -842,6 +836,7 @@ private fun DreamReviewMutationResult.toDreamActionMessage(): String = when (thi
 
 private fun DreamCorrectionResult.toDreamActionMessage(): String = when (this) {
     is DreamCorrectionResult.Applied -> "accepted"
+    is DreamCorrectionResult.PairApplied -> "accepted"
     is DreamCorrectionResult.AuthorityAppliedRebuildPending -> "dream_authority_applied_rebuild_pending"
     is DreamCorrectionResult.Conflict -> "conflict"
     DreamCorrectionResult.NotFound -> "not_found"

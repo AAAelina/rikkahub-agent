@@ -10,9 +10,11 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
+import me.rerere.ai.core.TokenUsage
 import me.rerere.ai.ui.MessageChunk
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
+import me.rerere.rikkahub.diagnostics.agenttiming.estimatedAgentTimingTokenUnits
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
@@ -77,6 +79,10 @@ interface ProviderTurnTimingHook {
     fun onBeforeAttempt(attemptIndex: Int, isRetry: Boolean) = Unit
     fun onAppDispatch(attemptIndex: Int, stream: Boolean) = Unit
     fun onFirstMeaningfulProgress(attemptIndex: Int, kind: ProviderProgressKind) = Unit
+    fun onFirstTextProgress(attemptIndex: Int) = Unit
+    fun onRawVisibleTextProgress(attemptIndex: Int, estimatedTokens: Long) = Unit
+    fun onConsumerVisibleTextProgress(attemptIndex: Int, estimatedTokens: Long) = Unit
+    fun onUsage(attemptIndex: Int, usage: TokenUsage) = Unit
     fun onProviderResponseFinished(attemptIndex: Int) = Unit
     fun onAttemptTerminal(attemptIndex: Int, outcome: ProviderAttemptTimingOutcome) = Unit
     fun onRetryScheduled(
@@ -297,10 +303,17 @@ class DefaultProviderTurnRunner(
                     onAppDispatch(attemptIndex, stream = request.stream)
                 }
                 var firstMeaningfulProgressReported = false
+                var firstTextProgressReported = false
                 if (request.stream) {
                     val providerFlow = checkNotNull(streamCall).invoke()
                     request.afterAdapterInvocation?.invoke(isRetry)
                     providerFlow.collect { chunk ->
+                        val visibleTextUnits = chunk.estimatedVisibleTextUnits()
+                        if (visibleTextUnits > 0L) {
+                            request.timingHook.safeCall {
+                                onRawVisibleTextProgress(attemptIndex, visibleTextUnits)
+                            }
+                        }
                         // Record at the provider boundary, before UI/database work. A slow
                         // collector must never be mistaken for a slow upstream stream.
                         if (progress != null ||
@@ -324,11 +337,27 @@ class DefaultProviderTurnRunner(
                                 }
                             }
                         }
+                        if (request.timingHook != null &&
+                            !firstTextProgressReported &&
+                            chunk.hasVisibleTextProgress()
+                        ) {
+                            firstTextProgressReported = true
+                            request.timingHook.safeCall { onFirstTextProgress(attemptIndex) }
+                        }
+                        chunk.usage?.takeIf { request.timingHook != null }?.let { usage ->
+                            request.timingHook.safeCall { onUsage(attemptIndex, usage) }
+                        }
                         chunks.send(chunk)
                     }
                 } else {
                     val chunk = request.singleCall()
                     request.afterAdapterInvocation?.invoke(isRetry)
+                    if (request.timingHook != null && chunk.hasVisibleTextProgress()) {
+                        request.timingHook.safeCall { onFirstTextProgress(attemptIndex) }
+                    }
+                    chunk.usage?.takeIf { request.timingHook != null }?.let { usage ->
+                        request.timingHook.safeCall { onUsage(attemptIndex, usage) }
+                    }
                     if ((request.timingHook != null || request.attemptObserver != null) &&
                         progressUnits(chunk) > 0L
                     ) {
@@ -384,6 +413,12 @@ class DefaultProviderTurnRunner(
         }
         try {
             for (chunk in chunks) {
+                val visibleTextUnits = chunk.estimatedVisibleTextUnits()
+                if (visibleTextUnits > 0L) {
+                    request.timingHook.safeCall {
+                        onConsumerVisibleTextProgress(attemptIndex, visibleTextUnits)
+                    }
+                }
                 request.onChunk(chunk)
             }
             providerChild.await()
@@ -583,6 +618,18 @@ private fun MessageChunk.estimatedProgressUnits(): Long = choices.sumOf { choice
     (choice.delta ?: choice.message)?.estimatedProgressUnits() ?: 0L
 }
 
+private fun MessageChunk.hasVisibleTextProgress(): Boolean = choices.any { choice ->
+    (choice.delta ?: choice.message)?.parts?.any { part ->
+        part is UIMessagePart.Text && part.text.isNotBlank()
+    } == true
+}
+
+private fun MessageChunk.estimatedVisibleTextUnits(): Long = choices.sumOf { choice ->
+    (choice.delta ?: choice.message)?.parts?.sumOf { part ->
+        if (part is UIMessagePart.Text) part.text.estimatedAgentTimingTokenUnits() else 0L
+    } ?: 0L
+}
+
 @Suppress("DEPRECATION")
 private fun UIMessage.estimatedProgressUnits(): Long = parts.sumOf { part ->
     when (part) {
@@ -604,12 +651,5 @@ private fun UIMessage.estimatedProgressUnits(): Long = parts.sumOf { part ->
 
 /** Cheap language-neutral approximation: CJK/non-ASCII code points ~= 1 token, ASCII ~= 4. */
 private fun String.estimatedTokenUnits(): Long {
-    var nonAscii = 0L
-    var ascii = 0L
-    codePoints().forEach { codePoint ->
-        if (!Character.isWhitespace(codePoint)) {
-            if (codePoint <= 0x7f) ascii += 1L else nonAscii += 1L
-        }
-    }
-    return nonAscii + (ascii + 3L) / 4L
+    return estimatedAgentTimingTokenUnits()
 }

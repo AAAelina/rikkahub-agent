@@ -1,15 +1,18 @@
 package me.rerere.rikkahub.memory.dreaming.synthesis
 
+import me.rerere.rikkahub.memory.dreaming.model.DreamContentType
 import me.rerere.rikkahub.memory.dreaming.model.DreamEpistemicType
+import me.rerere.rikkahub.memory.dreaming.model.DreamEpistemicOrigin
 import me.rerere.rikkahub.memory.dreaming.model.DreamOpaqueToken
 import me.rerere.rikkahub.memory.dreaming.model.DreamProposalNonce
 import me.rerere.rikkahub.memory.dreaming.model.DreamStorageClass
+import me.rerere.rikkahub.memory.dreaming.model.DreamSubjectKind
 import me.rerere.rikkahub.memory.dreaming.model.DreamSupportType
 import me.rerere.rikkahub.memory.dreaming.model.DreamSynthesisMode
 import me.rerere.rikkahub.memory.dreaming.model.requireDreamValidUnicode
 
-const val DREAM_PROMPT_CONTRACT_VERSION = "dream-proposal-v1"
-const val DREAM_VALIDATOR_VERSION = "dream-validator-v1"
+const val DREAM_PROMPT_CONTRACT_VERSION = "dream-pair-proposal-v2"
+const val DREAM_VALIDATOR_VERSION = "dream-pair-validator-v2"
 
 data class DreamProposalEnvelope(
     val schemaVersion: Int,
@@ -64,15 +67,38 @@ sealed interface DreamProposalOperation {
 
 data class DreamProposedClaim(
     val claimKeyHint: String,
-    val storageClass: DreamStorageClass,
-    val epistemicType: DreamEpistemicType,
+    val subjectKind: DreamSubjectKind,
+    val profileSection: String,
+    val epistemicOrigin: DreamEpistemicOrigin,
+    val contentType: DreamContentType,
     val title: String,
     val statement: String,
     val temporalExpression: String?,
     val evidence: List<DreamProposedEvidence>,
 ) {
+    val storageClass: DreamStorageClass
+        get() = if (contentType == DreamContentType.SHARED_HISTORY) {
+            DreamStorageClass.EPISODIC
+        } else {
+            DreamStorageClass.PROFILE
+        }
+
+    val epistemicType: DreamEpistemicType
+        get() = when (contentType) {
+            DreamContentType.PROJECT_STATE -> DreamEpistemicType.PROJECT_STATE
+            DreamContentType.PLAN, DreamContentType.GOAL -> DreamEpistemicType.PLAN
+            DreamContentType.CONSTRAINT -> DreamEpistemicType.CONSTRAINT
+            DreamContentType.PREFERENCE -> DreamEpistemicType.PREFERENCE_SUMMARY
+            else -> if (epistemicOrigin == DreamEpistemicOrigin.OBSERVED) {
+                DreamEpistemicType.OBSERVATION
+            } else {
+                DreamEpistemicType.BELIEF
+            }
+        }
+
     init {
         require(claimKeyHint.isNotBlank() && claimKeyHint.length <= 512)
+        require(profileSection.matches(Regex("^[a-z0-9][a-z0-9._-]{0,63}$")))
         require(title.isNotBlank() && title.length <= 4_096)
         require(statement.isNotBlank() && statement.length <= 32_000)
         require(temporalExpression == null || temporalExpression.length <= 128)
@@ -86,12 +112,16 @@ data class DreamProposedClaim(
 }
 
 data class DreamProposedEvidence(
-    val memoryToken: DreamOpaqueToken,
-    val expectedRevision: Long,
+    val experienceToken: DreamOpaqueToken,
+    val expectedEpoch: Long,
     val supportType: DreamSupportType,
 ) {
+    /** Compatibility names used by the established validator allowlist. */
+    val memoryToken: DreamOpaqueToken get() = experienceToken
+    val expectedRevision: Long get() = expectedEpoch
+
     init {
-        require(expectedRevision > 0L)
+        require(expectedEpoch > 0L)
     }
 }
 

@@ -19,6 +19,7 @@ import me.rerere.rikkahub.data.capability.CapabilityGrantEntity
 import me.rerere.rikkahub.data.db.dao.AlarmDao
 import me.rerere.rikkahub.data.db.dao.ConversationDAO
 import me.rerere.rikkahub.data.db.dao.DreamDao
+import me.rerere.rikkahub.data.db.dao.DreamExperienceDao
 import me.rerere.rikkahub.data.db.dao.DreamSynthesisDao
 import me.rerere.rikkahub.data.db.dao.BrowserLibraryDao
 import me.rerere.rikkahub.data.db.dao.FavoriteDAO
@@ -48,7 +49,10 @@ import me.rerere.rikkahub.toolcatalog.ToolShortcutEntity
 import me.rerere.rikkahub.data.db.entity.AlarmEntity
 import me.rerere.rikkahub.data.db.entity.ConversationEntity
 import me.rerere.rikkahub.data.db.entity.DreamRunEntity
+import me.rerere.rikkahub.data.db.entity.DreamExperienceEntity
+import me.rerere.rikkahub.data.db.entity.DreamExperienceStateEntity
 import me.rerere.rikkahub.data.db.entity.DreamClaimEntity
+import me.rerere.rikkahub.data.db.entity.DreamClaimExperienceSourceEntity
 import me.rerere.rikkahub.data.db.entity.DreamClaimVersionEntity
 import me.rerere.rikkahub.data.db.entity.DreamClaimVersionSourceEntity
 import me.rerere.rikkahub.data.db.entity.DreamSnapshotEntity
@@ -124,7 +128,10 @@ import me.rerere.rikkahub.owner.db.HostOperationEventEntity
         MemoryScopeStateEntity::class,
         MemoryScopeChangeEntity::class,
         DreamRunEntity::class,
+        DreamExperienceEntity::class,
+        DreamExperienceStateEntity::class,
         DreamClaimEntity::class,
+        DreamClaimExperienceSourceEntity::class,
         DreamClaimVersionEntity::class,
         DreamClaimVersionSourceEntity::class,
         DreamSnapshotEntity::class,
@@ -166,7 +173,7 @@ import me.rerere.rikkahub.owner.db.HostOperationEventEntity
     ],
     // v49 makes workflow capability/provenance authority durable. Learned artifacts remain
     // disabled until an explicit cross-database promotion completes.
-    version = 49,
+    version = 50,
     autoMigrations = [
         AutoMigration(from = 1, to = 2),
         AutoMigration(from = 2, to = 3),
@@ -206,6 +213,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun memoryV2Dao(): MemoryV2Dao
 
     abstract fun dreamDao(): DreamDao
+
+    abstract fun dreamExperienceDao(): DreamExperienceDao
 
     abstract fun dreamSynthesisDao(): DreamSynthesisDao
 

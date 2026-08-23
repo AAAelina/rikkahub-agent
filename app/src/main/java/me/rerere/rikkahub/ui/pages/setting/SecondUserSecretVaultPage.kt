@@ -334,6 +334,14 @@ fun SecondUserSecretVaultPage(
                                                     editingSlotId = slot.slotId
                                                     secretInput = result.value
                                                 }
+                                                SecretLeaseResult.SlotMissing -> {
+                                                    // Empty Vault slots are valid: they are created first and
+                                                    // populated afterwards. Treat a missing value file as an empty
+                                                    // secret so the user can enter the initial credential instead of
+                                                    // silently returning from the biometric prompt with no editor.
+                                                    editingSlotId = slot.slotId
+                                                    secretInput = ""
+                                                }
                                                 else -> Unit
                                             }
                                         }

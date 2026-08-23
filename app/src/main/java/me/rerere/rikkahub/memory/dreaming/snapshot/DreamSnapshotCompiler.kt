@@ -9,19 +9,24 @@ import me.rerere.rikkahub.memory.dreaming.model.DreamCanonicalJson
 import me.rerere.rikkahub.memory.dreaming.model.DreamClaimHead
 import me.rerere.rikkahub.memory.dreaming.model.DreamClaimState
 import me.rerere.rikkahub.memory.dreaming.model.DreamEpistemicType
+import me.rerere.rikkahub.memory.dreaming.model.DreamPairScopeId
 import me.rerere.rikkahub.memory.dreaming.model.DreamScopeId
 import me.rerere.rikkahub.memory.dreaming.model.DreamSha256
 import me.rerere.rikkahub.memory.dreaming.model.DreamStorageClass
+import me.rerere.rikkahub.memory.dreaming.model.DreamSubjectKind
 import me.rerere.rikkahub.memory.dreaming.model.canonicalMapOf
 import me.rerere.rikkahub.memory.dreaming.model.jsonNumberOrNull
 import me.rerere.rikkahub.memory.dreaming.model.normalizeDreamText
 
 enum class DreamSnapshotSection(val wireName: String, val order: Int) {
-    PROFILE("profile", 0),
-    CURRENT_PROJECTS("current_projects", 1),
-    ACTIVE_PLANS("active_plans", 2),
-    ACTIVE_CONSTRAINTS("active_constraints", 3),
-    OTHER_CONTEXT("other_context", 4),
+    ABOUT_USER("about_user", 0),
+    ABOUT_ASSISTANT("about_assistant", 1),
+    ABOUT_RELATIONSHIP("about_relationship", 2),
+    PROFILE("profile", 3),
+    CURRENT_PROJECTS("current_projects", 4),
+    ACTIVE_PLANS("active_plans", 5),
+    ACTIVE_CONSTRAINTS("active_constraints", 6),
+    OTHER_CONTEXT("other_context", 7),
 }
 
 data class DreamSnapshotCompileRequest(
@@ -185,21 +190,32 @@ object DreamSnapshotCompiler {
         ),
     )
 
-    private fun claimFragment(claim: DreamClaimHead): JsonObject = JsonObject(
-        canonicalMapOf(
-            "claim_key" to JsonPrimitive(claim.claimKey),
-            "confidence_permille" to JsonPrimitive(claim.confidencePermille),
-            "epistemic_type" to JsonPrimitive(claim.epistemicType.name),
-            "statement" to JsonPrimitive(normalizeDreamText(claim.statement)),
-            "storage_class" to JsonPrimitive(claim.storageClass.name),
-            "temporal_state" to JsonPrimitive(claim.temporalState.name),
-            "title" to JsonPrimitive(normalizeDreamText(claim.title)),
-            "valid_from_epoch_ms" to claim.validFromEpochMs.jsonNumberOrNull(),
-            "valid_to_epoch_ms" to claim.validToEpochMs.jsonNumberOrNull(),
-        ),
-    )
+    private fun claimFragment(claim: DreamClaimHead): JsonObject {
+        val entries = mutableListOf<Pair<String, kotlinx.serialization.json.JsonElement>>()
+        entries += "claim_key" to JsonPrimitive(claim.claimKey)
+        entries += "confidence_permille" to JsonPrimitive(claim.confidencePermille)
+        entries += "epistemic_type" to JsonPrimitive(claim.epistemicType.name)
+        if (DreamPairScopeId.parseOrNull(claim.scopeId.value) != null) {
+            entries += "content_type" to JsonPrimitive(claim.contentType.name)
+            entries += "epistemic_origin" to JsonPrimitive(claim.epistemicOrigin.name)
+            entries += "profile_section" to JsonPrimitive(claim.profileSection)
+            entries += "subject_kind" to JsonPrimitive(claim.subjectKind.name)
+        }
+        entries += "statement" to JsonPrimitive(normalizeDreamText(claim.statement))
+        entries += "storage_class" to JsonPrimitive(claim.storageClass.name)
+        entries += "temporal_state" to JsonPrimitive(claim.temporalState.name)
+        entries += "title" to JsonPrimitive(normalizeDreamText(claim.title))
+        entries += "valid_from_epoch_ms" to claim.validFromEpochMs.jsonNumberOrNull()
+        entries += "valid_to_epoch_ms" to claim.validToEpochMs.jsonNumberOrNull()
+        return JsonObject(canonicalMapOf(*entries.toTypedArray()))
+    }
 
     private fun sectionOf(claim: DreamClaimHead): DreamSnapshotSection = when {
+        DreamPairScopeId.parseOrNull(claim.scopeId.value) != null -> when (claim.subjectKind) {
+            DreamSubjectKind.USER -> DreamSnapshotSection.ABOUT_USER
+            DreamSubjectKind.ASSISTANT -> DreamSnapshotSection.ABOUT_ASSISTANT
+            DreamSubjectKind.RELATIONSHIP -> DreamSnapshotSection.ABOUT_RELATIONSHIP
+        }
         claim.epistemicType == DreamEpistemicType.PROJECT_STATE -> DreamSnapshotSection.CURRENT_PROJECTS
         claim.epistemicType == DreamEpistemicType.PLAN -> DreamSnapshotSection.ACTIVE_PLANS
         claim.epistemicType == DreamEpistemicType.CONSTRAINT -> DreamSnapshotSection.ACTIVE_CONSTRAINTS

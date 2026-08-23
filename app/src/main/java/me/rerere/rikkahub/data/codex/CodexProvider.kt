@@ -181,7 +181,12 @@ class CodexProvider(
             stream = true,
         )
         val requestBody = buildJsonObject {
-            baseRequestBody.forEach { (key, value) -> put(key, value) }
+            baseRequestBody.forEach { (key, value) ->
+                // ChatGPT's Codex backend implements a narrower Responses request schema than
+                // the public /v1/responses API. The native Codex CLI currently omits
+                // max_output_tokens, and /backend-api/codex/responses rejects it with HTTP 400.
+                if (key != "max_output_tokens") put(key, value)
+            }
             if (baseRequestBody["instructions"]?.jsonPrimitive?.contentOrNull.isNullOrBlank()) {
                 put("instructions", DEFAULT_INSTRUCTIONS)
             }

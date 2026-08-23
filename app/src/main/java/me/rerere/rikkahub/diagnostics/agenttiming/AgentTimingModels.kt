@@ -17,6 +17,8 @@ enum class AgentTimingEventKind {
 
     MEMORY_RETRIEVAL_STARTED,
     MEMORY_RETRIEVAL_FINISHED,
+    AUTO_CONTEXT_STARTED,
+    AUTO_CONTEXT_FINISHED,
     TOOL_SURFACE_STARTED,
     TOOL_SURFACE_FINISHED,
     MCP_DISCOVERY_STARTED,
@@ -52,6 +54,7 @@ enum class AgentTimingEventKind {
     PROVIDER_PREPARE_FINISHED,
     APP_PROVIDER_DISPATCH,
     PROVIDER_FIRST_PROGRESS,
+    PROVIDER_FIRST_TEXT,
     PROVIDER_FULL_RESPONSE,
     PROVIDER_STREAM_FINISHED,
     PROVIDER_ATTEMPT_TERMINAL,
@@ -87,6 +90,8 @@ enum class AgentTimingEventKind {
 
     FINAL_SAVE_STARTED,
     FINAL_SAVE_FINISHED,
+    GENERATION_DONE_NOTIFY_STARTED,
+    GENERATION_DONE_NOTIFY_FINISHED,
     WATCHDOG_RETRY,
     STEERING_APPLIED,
     TRACE_COMPLETED,
@@ -171,6 +176,12 @@ data class AgentTimingRoundSnapshot(
     val milestones: Map<AgentTimingEventKind, Long>,
     val terminalResult: AgentTimingEventResult? = null,
     val handoffFromPreviousResultsNs: Long? = null,
+    val promptTokens: Int? = null,
+    val completionTokens: Int? = null,
+    val cachedTokens: Int? = null,
+    val providerVisibleStream: AgentTimingStreamProgressSnapshot = AgentTimingStreamProgressSnapshot(),
+    val sessionVisibleStream: AgentTimingStreamProgressSnapshot = AgentTimingStreamProgressSnapshot(),
+    val uiVisibleStream: AgentTimingStreamProgressSnapshot = AgentTimingStreamProgressSnapshot(),
 ) {
     fun at(kind: AgentTimingEventKind): Long? = milestones[kind]
 
@@ -184,6 +195,40 @@ data class AgentTimingRoundSnapshot(
             AgentTimingEventKind.APP_PROVIDER_DISPATCH,
             AgentTimingEventKind.PROVIDER_FIRST_PROGRESS,
         )
+
+    val firstTextNs: Long?
+        get() = durationNs(
+            AgentTimingEventKind.APP_PROVIDER_DISPATCH,
+            AgentTimingEventKind.PROVIDER_FIRST_TEXT,
+        )
+}
+
+/** Bounded, content-free streaming throughput counters for one provider round. */
+data class AgentTimingStreamProgressSnapshot(
+    val estimatedTokens: Long = 0L,
+    val sampleCount: Long = 0L,
+    val firstAtNs: Long? = null,
+    val lastAtNs: Long? = null,
+) {
+    val durationNs: Long?
+        get() = durationBetween(firstAtNs, lastAtNs)
+}
+
+enum class AgentTimingStreamStage {
+    PROVIDER_RAW_VISIBLE,
+    SESSION_CONSUMER_VISIBLE,
+}
+
+/** Cheap language-neutral approximation used only for diagnostics, never billing/accounting. */
+internal fun String.estimatedAgentTimingTokenUnits(): Long {
+    var nonAscii = 0L
+    var ascii = 0L
+    codePoints().forEach { codePoint ->
+        if (!Character.isWhitespace(codePoint)) {
+            if (codePoint <= 0x7f) ascii += 1L else nonAscii += 1L
+        }
+    }
+    return nonAscii + (ascii + 3L) / 4L
 }
 
 data class AgentTimingToolSnapshot(

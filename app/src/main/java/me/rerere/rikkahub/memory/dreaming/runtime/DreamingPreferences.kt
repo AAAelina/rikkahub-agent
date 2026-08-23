@@ -6,6 +6,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import me.rerere.rikkahub.memory.dreaming.model.DreamScopeId
+import me.rerere.rikkahub.memory.dreaming.model.DreamPairScopeId
 import me.rerere.rikkahub.memory.dreaming.model.DreamingFeatureFlags
 
 const val DREAMING_PREFERENCES_SCHEMA_VERSION = 1
@@ -142,8 +143,18 @@ data class DreamingPreferencesV1(
 
     fun failClosed(): DreamingPreferencesV1 = validatedOrNull() ?: DreamingPreferencesV1()
 
-    fun forScope(scopeId: DreamScopeId): DreamingScopePreferences =
-        failClosed().scopes[scopeId.value] ?: DreamingScopePreferences()
+    fun forScope(scopeId: DreamScopeId): DreamingScopePreferences {
+        val base = failClosed()
+        base.scopes[scopeId.value]?.let { return it }
+        // One-time semantic bridge from the old Memory-owned Dream scopes. New pair-specific
+        // settings win immediately; otherwise preserve the user's previous assistant/global flag.
+        if (DreamPairScopeId.parseOrNull(scopeId.value) != null) {
+            val assistantId = scopeId.value.substringAfterLast(':')
+            base.scopes[assistantId]?.let { return it }
+            base.scopes[DreamScopeId.GLOBAL_VALUE]?.let { return it }
+        }
+        return DreamingScopePreferences()
+    }
 
     fun withScopeMutation(
         scopeId: DreamScopeId,

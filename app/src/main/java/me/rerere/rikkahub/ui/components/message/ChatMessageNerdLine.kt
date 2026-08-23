@@ -297,11 +297,53 @@ private fun AgentTimingDetailSheet(
                     )
                     round.sections.forEach { section ->
                         AgentTimingSection(section)
+                        if (section.kind == AgentTimingSectionKind.PROVIDER) {
+                            round.providerStats?.let { stats ->
+                                AgentTimingValueRow(
+                                    label = stringResource(R.string.agent_timing_metric_provider_output_tokens),
+                                    value = stats.outputTokens.formatNumber(),
+                                    isLong = false,
+                                )
+                                stats.decodeTps?.let { tps ->
+                                    AgentTimingValueRow(
+                                        label = stringResource(R.string.agent_timing_metric_provider_decode_tps),
+                                        value = "${tps.toFixed(1)} tok/s",
+                                        isLong = false,
+                                    )
+                                }
+                                stats.providerVisible?.let { stream ->
+                                    AgentTimingValueRow(
+                                        label = stringResource(R.string.agent_timing_metric_provider_visible_stream),
+                                        value = streamThroughputValue(stream),
+                                        isLong = false,
+                                    )
+                                }
+                                stats.sessionVisible?.let { stream ->
+                                    AgentTimingValueRow(
+                                        label = stringResource(R.string.agent_timing_metric_session_visible_stream),
+                                        value = streamThroughputValue(stream),
+                                        isLong = false,
+                                    )
+                                }
+                                stats.uiVisible?.let { stream ->
+                                    AgentTimingValueRow(
+                                        label = stringResource(R.string.agent_timing_metric_ui_visible_stream),
+                                        value = streamThroughputValue(stream),
+                                        isLong = false,
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     }
+}
+
+private fun streamThroughputValue(stats: AgentTimingStreamStatsPresentation): String {
+    val rate = stats.tps?.let { "~${it.toFixed(1)} tok/s" } ?: "~? tok/s"
+    return "$rate · ${stats.sampleCount} samples"
 }
 
 @Composable
@@ -407,7 +449,9 @@ private fun AgentTimingSectionKind.label(): String = stringResource(
 private fun AgentTimingMetricPresentation.label(): String {
     val resource = when (kind) {
         AgentTimingMetricKind.ADMISSION -> R.string.agent_timing_metric_admission
+        AgentTimingMetricKind.RUN_PREFLIGHT -> R.string.agent_timing_metric_run_preflight
         AgentTimingMetricKind.MEMORY_RETRIEVAL -> R.string.agent_timing_metric_memory_retrieval
+        AgentTimingMetricKind.AUTO_CONTEXT -> R.string.agent_timing_metric_auto_context
         AgentTimingMetricKind.TOOL_SURFACE -> R.string.agent_timing_metric_tool_surface
         AgentTimingMetricKind.MCP_DISCOVERY -> R.string.agent_timing_metric_mcp_discovery
         AgentTimingMetricKind.CONTEXT -> R.string.agent_timing_metric_context
@@ -427,6 +471,7 @@ private fun AgentTimingMetricPresentation.label(): String {
         AgentTimingMetricKind.MEMORY_LAST_ACCESS -> R.string.agent_timing_metric_memory_last_access
         AgentTimingMetricKind.PROVIDER_PREPARE -> R.string.agent_timing_metric_provider_prepare
         AgentTimingMetricKind.FIRST_PROGRESS -> R.string.agent_timing_first_progress
+        AgentTimingMetricKind.FIRST_TEXT -> R.string.agent_timing_first_text
         AgentTimingMetricKind.FULL_RESPONSE -> R.string.agent_timing_full_response
         AgentTimingMetricKind.PROVIDER_TOTAL -> R.string.agent_timing_metric_provider_total
         AgentTimingMetricKind.TOOL_BATCH -> R.string.agent_timing_metric_tool_batch
@@ -437,6 +482,10 @@ private fun AgentTimingMetricPresentation.label(): String {
         AgentTimingMetricKind.HUMAN_WAIT -> R.string.agent_timing_metric_human_wait
         AgentTimingMetricKind.APPROVAL_RESOLUTION -> R.string.agent_timing_metric_approval_resolution
         AgentTimingMetricKind.FINAL_SAVE -> R.string.agent_timing_metric_final_save
+        AgentTimingMetricKind.GENERATION_DONE_NOTIFY -> R.string.agent_timing_metric_generation_done_notify
+        AgentTimingMetricKind.POST_PROVIDER_PROCESSING -> R.string.agent_timing_metric_post_provider_processing
+        AgentTimingMetricKind.RUN_COMPLETION_DRAIN -> R.string.agent_timing_metric_run_completion_drain
+        AgentTimingMetricKind.RUNTIME_FINALIZATION -> R.string.agent_timing_metric_runtime_finalization
     }
     return if (ordinal != null && (
             kind == AgentTimingMetricKind.TOOL_EXECUTION ||

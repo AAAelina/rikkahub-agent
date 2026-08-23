@@ -9,8 +9,8 @@ import androidx.room.PrimaryKey
 /**
  * Observer/Dream execution audit row.
  *
- * The lease columns mirror the owner recorded by [MemoryScopeStateEntity]; they are useful for
- * recovery diagnostics but are deliberately not a second lease authority.
+ * `memory_scope_state` remains a temporary referential parent for the v49 schema. Pair-Dream lease
+ * and epoch authority live exclusively in `dream_experience_state`.
  */
 @Entity(
     tableName = "dream_runs",

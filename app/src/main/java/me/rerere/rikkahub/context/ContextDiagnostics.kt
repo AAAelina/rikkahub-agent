@@ -17,6 +17,11 @@ data class ContextOmissionDiagnostic(
     val detailCode: String?,
 )
 
+data class ContextSourceTimingDiagnostic(
+    val source: ContextSource,
+    val durationNs: Long,
+)
+
 /**
  * Bounded, process-local diagnostics. It deliberately stores no observed screen,
  * notification, application, or OCR text.
@@ -26,6 +31,7 @@ data class ContextRunDiagnostic(
     val invocationSurface: ContextInvocationSurface,
     val sources: List<ContextSourceDiagnostic>,
     val omissions: List<ContextOmissionDiagnostic>,
+    val sourceTimings: List<ContextSourceTimingDiagnostic> = emptyList(),
     val totalCharacters: Int,
     val collectedAtMs: Long,
 )
@@ -53,6 +59,12 @@ class ContextDiagnosticsStore(
                     source = omission.source,
                     reason = omission.reason,
                     detailCode = omission.detailCode?.take(80),
+                )
+            },
+            sourceTimings = snapshot.sourceTimings.map { timing ->
+                ContextSourceTimingDiagnostic(
+                    source = timing.source,
+                    durationNs = timing.durationNs,
                 )
             },
             totalCharacters = snapshot.totalCharacters,

@@ -213,6 +213,31 @@ internal suspend fun appendValidatedBusinessDraft(
             "Outbox uniqueness conflict without the expected event",
         )
     if (!existing.hasSameOutboxIdentityAs(row)) {
+        if (
+            row.eventType == LearningEventType.SOURCE_INVALIDATED.name &&
+            row.eventSchemaVersion == 2 &&
+            row.scopeKind != null &&
+            row.scopeId != null
+        ) {
+            val scopedRow = row.copy(
+                eventId = LearningCanonicalId.scopedSourceInvalidationEventId(
+                    legacyEventId = row.eventId,
+                    scopeKindCode = row.scopeKind,
+                    scopeId = row.scopeId,
+                ),
+            )
+            val scopedInsertedSeq = dao.insertIgnore(scopedRow)
+            if (scopedInsertedSeq != -1L) {
+                return LearningOutboxAppendResult.Inserted(scopedInsertedSeq)
+            }
+            val scopedExisting = dao.findByEventId(scopedRow.eventId)
+                ?: throw LearningHandoffIdentityConflictException(
+                    "Scoped outbox uniqueness conflict without the expected event",
+                )
+            if (scopedExisting.hasSameOutboxIdentityAs(scopedRow)) {
+                return LearningOutboxAppendResult.Duplicate(scopedExisting.seq)
+            }
+        }
         throw LearningHandoffIdentityConflictException(
             "Same outbox event ID has different authoritative fields",
         )

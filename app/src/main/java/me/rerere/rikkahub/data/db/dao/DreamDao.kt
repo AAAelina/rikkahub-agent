@@ -161,16 +161,20 @@ interface DreamDao {
     suspend fun cancelPendingSynthesisRuns(scopeId: String, nowMs: Long): Int
 
     @Query(
-        "SELECT COUNT(*) FROM dream_runs WHERE mode IN ('INCREMENTAL', 'FULL') " +
-            "AND status = 'PENDING'",
+        "SELECT COUNT(*) FROM dream_runs AS r " +
+            "WHERE r.mode IN ('INCREMENTAL', 'FULL') AND r.status = 'PENDING' " +
+            "AND EXISTS (SELECT 1 FROM dream_experience_state AS pair_state " +
+            "WHERE pair_state.pair_scope_id = r.scope_id)",
     )
-    suspend fun countPendingSynthesisRuns(): Long
+    suspend fun countPairPendingSynthesisRuns(): Long
 
     @Query(
-        "SELECT COUNT(*) FROM dream_runs WHERE mode IN ('INCREMENTAL', 'FULL') " +
-            "AND status = 'RUNNING'",
+        "SELECT COUNT(*) FROM dream_runs AS r " +
+            "WHERE r.mode IN ('INCREMENTAL', 'FULL') AND r.status = 'RUNNING' " +
+            "AND EXISTS (SELECT 1 FROM dream_experience_state AS pair_state " +
+            "WHERE pair_state.pair_scope_id = r.scope_id)",
     )
-    suspend fun countRunningSynthesisRuns(): Long
+    suspend fun countPairRunningSynthesisRuns(): Long
 
     @Query(
         "SELECT COUNT(*) AS startedRunCount, " +

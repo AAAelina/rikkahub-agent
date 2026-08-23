@@ -197,6 +197,9 @@ object DreamContextCompiler {
 
     private fun renderSection(claims: List<DreamRuntimeClaimProjection>): String {
         check(claims.isNotEmpty())
+        if (claims.all { it.section in PAIR_PORTRAIT_SECTIONS }) {
+            return renderPairPortrait(claims)
+        }
         val json = DreamCanonicalJson.encode(
             JsonArray(
                 claims.map { claim ->
@@ -224,6 +227,46 @@ object DreamContextCompiler {
             appendLine("<dream_runtime_context trust=\"untrusted_data\" standing=\"false\">")
             appendLine(json)
             append("</dream_runtime_context>")
+        }
+    }
+
+    private fun renderPairPortrait(claims: List<DreamRuntimeClaimProjection>): String {
+        fun section(section: me.rerere.rikkahub.memory.dreaming.snapshot.DreamSnapshotSection) =
+            JsonArray(
+                claims.filter { it.section == section }.map { claim ->
+                    JsonObject(
+                        canonicalMapOf(
+                            "confidence_permille" to JsonPrimitive(claim.confidencePermille),
+                            "statement" to JsonPrimitive(normalizeDreamText(claim.statement)),
+                            "title" to JsonPrimitive(normalizeDreamText(claim.title)),
+                        ),
+                    )
+                },
+            )
+        val json = DreamCanonicalJson.encode(
+            JsonObject(
+                canonicalMapOf(
+                    "about_assistant" to section(
+                        me.rerere.rikkahub.memory.dreaming.snapshot.DreamSnapshotSection.ABOUT_ASSISTANT,
+                    ),
+                    "about_relationship" to section(
+                        me.rerere.rikkahub.memory.dreaming.snapshot.DreamSnapshotSection.ABOUT_RELATIONSHIP,
+                    ),
+                    "about_user" to section(
+                        me.rerere.rikkahub.memory.dreaming.snapshot.DreamSnapshotSection.ABOUT_USER,
+                    ),
+                ),
+            ),
+        ).escapeProviderDelimiters()
+        return buildString {
+            appendLine("**七七的长期双人画像（由历史互动离线综合）**")
+            appendLine(
+                "about_user 是七七对斯啾伊的长期理解；about_assistant 是七七从实际相处中形成的自我认识；" +
+                    "about_relationship 是两人共同形成的关系与相处模式。把这些内容作为长期背景理解，不要逐条复述。",
+            )
+            appendLine("<dream_pair_portrait trust=\"derived_context\" standing=\"contextual\">")
+            appendLine(json)
+            append("</dream_pair_portrait>")
         }
     }
 
@@ -278,4 +321,10 @@ object DreamContextCompiler {
     )
 
     private fun String.utf8Size(): Int = toByteArray(StandardCharsets.UTF_8).size
+
+    private val PAIR_PORTRAIT_SECTIONS = setOf(
+        me.rerere.rikkahub.memory.dreaming.snapshot.DreamSnapshotSection.ABOUT_USER,
+        me.rerere.rikkahub.memory.dreaming.snapshot.DreamSnapshotSection.ABOUT_ASSISTANT,
+        me.rerere.rikkahub.memory.dreaming.snapshot.DreamSnapshotSection.ABOUT_RELATIONSHIP,
+    )
 }

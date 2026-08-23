@@ -403,6 +403,8 @@ class LocalTools(
     private val executionTokenProvider: me.rerere.rikkahub.execution.ExecutionTokenProvider,
     private val cancellationCoordinator: me.rerere.rikkahub.data.execution.CancellationCoordinator,
     private val petDiaryToolProvider: me.rerere.rikkahub.pet.PetDiaryToolProvider,
+    private val dreamIntrospectionToolProvider:
+        me.rerere.rikkahub.memory.dreaming.runtime.DreamIntrospectionToolProvider,
     private val persistentTtsLibrary: me.rerere.rikkahub.tts.PersistentTtsLibrary,
     private val ttsLibraryToolProvider: me.rerere.rikkahub.tts.TtsLibraryToolProvider,
     private val reverseGeocodeToolProvider:
@@ -767,6 +769,7 @@ class LocalTools(
     ): List<Tool> {
         val tools = mutableListOf<Tool>()
         tools.addAll(petDiaryToolProvider.tools(invocationContext))
+        tools.addAll(dreamIntrospectionToolProvider.tools(invocationContext))
         if (options.contains(LocalToolOption.JavascriptEngine)) {
             tools.add(javascriptTool)
         }

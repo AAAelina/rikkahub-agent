@@ -163,6 +163,7 @@ class RouteActivity : ComponentActivity() {
         const val EXTRA_OPEN_CODEX_SETTINGS = "open_codex_settings"
         const val EXTRA_OPEN_SYSTEM_ASSISTANT_SETTINGS = "open_system_assistant_settings"
         const val EXTRA_OPEN_QUICK_CAPTURE_SETTINGS = "open_quick_capture_settings"
+        const val EXTRA_OPEN_SECRET_VAULT = "open_secret_vault"
         const val EXTRA_CONVERSATION_ID = "conversationId"
         const val EXTRA_QUICK_CAPTURE_DRAFT_TEXT = "quick_capture_draft_text"
         const val EXTRA_QUICK_CAPTURE_DRAFT_FILES = "quick_capture_draft_files"
@@ -277,6 +278,9 @@ class RouteActivity : ComponentActivity() {
             source.getBooleanExtra(EXTRA_OPEN_CODEX_SETTINGS, false) -> {
                 Screen.SettingProviderDetail(DEFAULT_CODEX_PROVIDER_ID.toString())
             }
+            source.getBooleanExtra(EXTRA_OPEN_SECRET_VAULT, false) -> {
+                Screen.SecondUserSecretVault
+            }
             source.hasExtra(EXTRA_CONVERSATION_ID) -> {
                 source.getStringExtra(EXTRA_CONVERSATION_ID)?.let { conversationId ->
                     Screen.Chat(
@@ -298,6 +302,7 @@ class RouteActivity : ComponentActivity() {
         source.removeExtra(EXTRA_OPEN_SYSTEM_ASSISTANT_SETTINGS)
         source.removeExtra(EXTRA_OPEN_QUICK_CAPTURE_SETTINGS)
         source.removeExtra(EXTRA_OPEN_CODEX_SETTINGS)
+        source.removeExtra(EXTRA_OPEN_SECRET_VAULT)
         source.removeExtra(EXTRA_CONVERSATION_ID)
         source.removeExtra(EXTRA_QUICK_CAPTURE_DRAFT_TEXT)
         source.removeExtra(EXTRA_QUICK_CAPTURE_DRAFT_FILES)

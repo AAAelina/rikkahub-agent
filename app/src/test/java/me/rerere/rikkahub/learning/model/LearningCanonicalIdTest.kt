@@ -62,6 +62,45 @@ class LearningCanonicalIdTest {
         assertFails { eventId(terminalState = "completed") }
     }
 
+    @Test
+    fun `scoped source invalidation collision identity separates learning scopes`() {
+        val legacy = LearningCanonicalId.eventId(
+            streamId = streamId,
+            eventType = LearningEventType.SOURCE_INVALIDATED,
+            eventSchemaVersion = 2,
+            sourceKindCode = LearningSourceKind.CONVERSATION_MESSAGE.name,
+            sourceId = "message-1",
+            sourceRevision = 2L,
+            terminalState = null,
+            previousSourceRevision = 1L,
+            sourceStateCode = "SUPERSEDED",
+            correlation = LearningCorrelation(
+                conversationId = "conversation-1",
+                conversationSourceRevision = 2L,
+                messageId = "message-1",
+                messageRevision = 2L,
+            ),
+        )
+        val assistant = LearningCanonicalId.scopedSourceInvalidationEventId(
+            legacy,
+            LearningScopeKind.ASSISTANT.name,
+            "10000000-0000-0000-0000-000000000001",
+        )
+        val subject = LearningCanonicalId.scopedSourceInvalidationEventId(
+            legacy,
+            LearningScopeKind.AUTHORITY_SUBJECT.name,
+            "local-second-user:v1:test",
+        )
+
+        assertNotEquals(legacy, assistant)
+        assertNotEquals(assistant, subject)
+        assertEquals(assistant, LearningCanonicalId.scopedSourceInvalidationEventId(
+            legacy,
+            LearningScopeKind.ASSISTANT.name,
+            "10000000-0000-0000-0000-000000000001",
+        ))
+    }
+
     private fun eventId(
         sourceId: String = "command-1",
         sourceRevision: Long? = 7L,

@@ -33,7 +33,7 @@ sealed interface DreamProposalParseResult {
     data class Rejected(val failure: DreamProposalParseFailure) : DreamProposalParseResult
 }
 
-/** Strict, whole-document DreamProposalV1 parser. It never searches for a JSON substring. */
+/** Strict, whole-document pair-Dream proposal parser. It never searches for a JSON substring. */
 object DreamProposalParser {
     private val json = Json {
         isLenient = false
@@ -82,7 +82,7 @@ object DreamProposalParser {
             required = setOf(
                 "schema_version",
                 "proposal_nonce",
-                "base_memory_epoch",
+                "base_experience_epoch",
                 "base_dream_revision",
                 "mode",
                 "operations",
@@ -95,7 +95,7 @@ object DreamProposalParser {
         return DreamProposalEnvelope(
             schemaVersion = root.requiredLong("schema_version").toIntExact(),
             proposalNonce = constructOrFail { DreamProposalNonce(root.requiredString("proposal_nonce")) },
-            baseMemoryEpoch = root.requiredLong("base_memory_epoch").nonNegative(),
+            baseMemoryEpoch = root.requiredLong("base_experience_epoch").nonNegative(),
             baseDreamRevision = root.requiredLong("base_dream_revision").nonNegative(),
             mode = root.requiredEnum("mode"),
             operations = operationsArray.map { parseOperation(it.requiredObject()) },
@@ -157,8 +157,10 @@ object DreamProposalParser {
         value.requireExactKeys(
             required = setOf(
                 "claim_key_hint",
-                "storage_class",
-                "epistemic_type",
+                "subject_kind",
+                "profile_section",
+                "epistemic_origin",
+                "content_type",
                 "title",
                 "statement",
                 "temporal_expression",
@@ -172,8 +174,10 @@ object DreamProposalParser {
         return constructOrFail {
             DreamProposedClaim(
                 claimKeyHint = value.requiredString("claim_key_hint"),
-                storageClass = value.requiredEnum("storage_class"),
-                epistemicType = value.requiredEnum("epistemic_type"),
+                subjectKind = value.requiredEnum("subject_kind"),
+                profileSection = value.requiredString("profile_section"),
+                epistemicOrigin = value.requiredEnum("epistemic_origin"),
+                contentType = value.requiredEnum("content_type"),
                 title = value.requiredString("title"),
                 statement = value.requiredString("statement"),
                 temporalExpression = value.nullableString("temporal_expression"),
@@ -183,12 +187,12 @@ object DreamProposalParser {
     }
 
     private fun parseEvidence(value: JsonObject): DreamProposedEvidence {
-        value.requireExactKeys(required = setOf("memory_token", "expected_revision", "support_type"))
+        value.requireExactKeys(required = setOf("experience_token", "expected_epoch", "support_type"))
         return constructOrFail {
             DreamProposedEvidence(
-                memoryToken = DreamOpaqueToken(value.requiredString("memory_token"))
+                experienceToken = DreamOpaqueToken(value.requiredString("experience_token"))
                     .requireKind(DreamOpaqueTokenKind.MEMORY),
-                expectedRevision = value.requiredLong("expected_revision"),
+                expectedEpoch = value.requiredLong("expected_epoch"),
                 supportType = value.requiredEnum("support_type"),
             )
         }

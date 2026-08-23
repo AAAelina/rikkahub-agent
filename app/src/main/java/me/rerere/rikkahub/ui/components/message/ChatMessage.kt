@@ -36,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -84,8 +85,10 @@ import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.MessageNode
 import me.rerere.rikkahub.data.model.replaceRegexes
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingFirstVisibleDrawMarker
+import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingStreamRenderMarker
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingToolSnapshot
 import me.rerere.rikkahub.diagnostics.agenttiming.AgentTimingTraceSnapshot
+import me.rerere.rikkahub.diagnostics.agenttiming.estimatedAgentTimingTokenUnits
 import me.rerere.rikkahub.ui.components.richtext.MarkdownBlock
 import me.rerere.rikkahub.ui.components.richtext.ZoomableAsyncImage
 import me.rerere.rikkahub.ui.components.richtext.buildMarkdownPreviewHtml
@@ -128,6 +131,7 @@ fun ChatMessage(
     onToolAnswer: ((toolCallId: String, answer: String) -> Unit)? = null,
     agentTiming: AgentTimingTraceSnapshot? = null,
     agentTimingDrawMarker: AgentTimingFirstVisibleDrawMarker? = null,
+    agentTimingStreamMarker: AgentTimingStreamRenderMarker? = null,
 ) {
     val message = node.messages[node.selectIndex]
     val settings = LocalSettings.current.displaySetting
@@ -151,6 +155,16 @@ fun ChatMessage(
                 it.assistantMessageId == null || it.assistantMessageId == message.id
             }
             matchAgentTimingTools(messageTools.map { it.toolCallId }, associated)
+        }
+    }
+    val visibleEstimatedTokens = remember(message.parts) {
+        message.parts.filterIsInstance<UIMessagePart.Text>()
+            .sumOf { it.text.estimatedAgentTimingTokenUnits() }
+    }
+    LaunchedEffect(agentTimingStreamMarker, visibleEstimatedTokens, loading) {
+        if (agentTimingStreamMarker != null && loading && visibleEstimatedTokens > 0L) {
+            withFrameNanos { }
+            agentTimingStreamMarker.recordVisibleFrame(visibleEstimatedTokens)
         }
     }
     val firstDrawModifier = if (agentTimingDrawMarker == null) {

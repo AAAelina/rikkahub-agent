@@ -78,11 +78,17 @@ data class ContextOmission(
     val detailCode: String? = null,
 )
 
+data class ContextSourceTiming(
+    val source: ContextSource,
+    val durationNs: Long,
+)
+
 data class ContextSnapshot(
     val runId: String,
     val fragments: List<ContextFragment>,
     val omissions: List<ContextOmission>,
     val collectedAtMs: Long,
+    val sourceTimings: List<ContextSourceTiming> = emptyList(),
 ) {
     val totalCharacters: Int = fragments.sumOf { it.text.length }
 

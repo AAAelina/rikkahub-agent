@@ -3,12 +3,10 @@ package me.rerere.rikkahub.memory.dreaming.model
 import kotlin.uuid.Uuid
 
 /**
- * Canonical identifier for exactly one existing Memory authority scope.
+ * Canonical identifier stored by the existing Dream run/claim/snapshot tables.
  *
- * Private and global memory keep the product's current mutually-exclusive semantics. A private
- * scope is the assistant UUID itself (never `assistant:<uuid>`); the only non-UUID value is
- * [GLOBAL_VALUE]. Parsing is deliberately strict so a storage or IPC boundary cannot silently
- * normalize an ambiguous value into another scope.
+ * Pair-owned Dream uses `pair:local-user:<assistant-uuid>`. Legacy private/global values remain
+ * readable during migration so existing Dream history can still be shown and retired cleanly.
  */
 @JvmInline
 value class DreamScopeId private constructor(val value: String) : Comparable<DreamScopeId> {
@@ -21,6 +19,7 @@ value class DreamScopeId private constructor(val value: String) : Comparable<Dre
 
     companion object {
         const val GLOBAL_VALUE: String = "__global__"
+        private const val PAIR_PREFIX: String = "pair:${DreamPairScope.LOCAL_USER_KEY}:"
 
         private val canonicalUuidPattern = Regex(
             "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -31,16 +30,24 @@ value class DreamScopeId private constructor(val value: String) : Comparable<Dre
         /** Returns null for whitespace, aliases, upper-case UUIDs, and non-canonical UUID text. */
         fun parseOrNull(raw: String?): DreamScopeId? {
             if (raw == GLOBAL_VALUE) return Global
-            if (raw == null || !canonicalUuidPattern.matches(raw)) return null
+            if (raw == null) return null
+            if (raw.startsWith(PAIR_PREFIX)) {
+                val pairId = DreamPairScopeId.parseOrNull(raw) ?: return null
+                return DreamScopeId(pairId.value)
+            }
+            if (!canonicalUuidPattern.matches(raw)) return null
             val parsed = runCatching { Uuid.parse(raw) }.getOrNull() ?: return null
             return raw.takeIf { parsed.toString() == it }?.let(::DreamScopeId)
         }
 
         fun requireCanonical(raw: String): DreamScopeId =
             requireNotNull(parseOrNull(raw)) {
-                "Dream scope must be a canonical lower-case UUID or $GLOBAL_VALUE"
+                "Dream scope must be a canonical pair scope, lower-case UUID, or $GLOBAL_VALUE"
             }
 
         fun privateScope(assistantId: Uuid): DreamScopeId = DreamScopeId(assistantId.toString())
+
+        fun pairScope(assistantId: Uuid): DreamScopeId =
+            DreamScopeId(DreamPairScopeId.forAssistant(assistantId).value)
     }
 }

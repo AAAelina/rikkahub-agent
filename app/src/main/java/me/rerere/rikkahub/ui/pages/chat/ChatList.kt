@@ -372,6 +372,25 @@ private fun ChatListNormal(
                 } else {
                     null
                 }
+                val timingStreamMarker = if (
+                    timingUiState != null &&
+                    messageTiming != null &&
+                    loading && index == lastMessageIndex
+                ) {
+                    remember(
+                        timingUiState.store,
+                        conversation.id,
+                        node.currentMessage.id,
+                        messageTiming.traceSequence,
+                    ) {
+                        timingUiState.store.streamRenderMarker(
+                            conversationId = conversation.id,
+                            messageId = node.currentMessage.id,
+                        )
+                    }
+                } else {
+                    null
+                }
                 Column {
                     ListSelectableItem(
                         key = node.id,
@@ -424,6 +443,7 @@ private fun ChatListNormal(
                             lastMessage = index == lastMessageIndex,
                             agentTiming = messageTiming,
                             agentTimingDrawMarker = timingDrawMarker,
+                            agentTimingStreamMarker = timingStreamMarker,
                         )
                     }
                 }

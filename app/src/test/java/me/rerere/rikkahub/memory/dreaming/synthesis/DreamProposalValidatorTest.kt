@@ -5,9 +5,12 @@ import me.rerere.rikkahub.memory.MemoryApprovalSource
 import me.rerere.rikkahub.memory.dreaming.DreamingTestFixtures
 import me.rerere.rikkahub.memory.dreaming.input.DreamDeterministicInvalidation
 import me.rerere.rikkahub.memory.dreaming.input.DreamDeterministicInvalidationReason
+import me.rerere.rikkahub.memory.dreaming.model.DREAM_PROPOSAL_SCHEMA_VERSION
 import me.rerere.rikkahub.memory.dreaming.model.DreamClaimState
+import me.rerere.rikkahub.memory.dreaming.model.DreamContentType
+import me.rerere.rikkahub.memory.dreaming.model.DreamEpistemicOrigin
 import me.rerere.rikkahub.memory.dreaming.model.DreamEpistemicType
-import me.rerere.rikkahub.memory.dreaming.model.DreamStorageClass
+import me.rerere.rikkahub.memory.dreaming.model.DreamSubjectKind
 import me.rerere.rikkahub.memory.dreaming.model.DreamSupportType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -30,13 +33,14 @@ class DreamProposalValidatorTest {
     }
 
     @Test
-    fun `belief is never silently promoted to active context`() = runBlocking {
+    fun `inferred portrait claim is active with reduced confidence when evidence is clean`() = runBlocking {
         val input = DreamingTestFixtures.input()
         val result = validator.validate(
             DreamProposalValidationRequest(input, newClaimProposal(input, DreamEpistemicType.BELIEF)),
         ) as DreamProposalValidationResult.Valid
 
-        assertEquals(DreamClaimState.PENDING_REVIEW, result.plan.upserts.single().nextState)
+        assertEquals(DreamClaimState.ACTIVE_CONTEXTUAL, result.plan.upserts.single().nextState)
+        assertEquals(750, result.plan.upserts.single().confidencePermille)
     }
 
     @Test
@@ -216,8 +220,8 @@ class DreamProposalValidatorTest {
                     reason = DreamProposalInvalidationReason.CONTRADICTED_BY_AUTHORITY,
                     evidence = listOf(
                         DreamProposedEvidence(
-                            memoryToken = input.allowedMemories.keys.single(),
-                            expectedRevision = 2,
+                            experienceToken = input.allowedMemories.keys.single(),
+                            expectedEpoch = 2,
                             supportType = DreamSupportType.CONTRADICTS,
                         ),
                     ),
@@ -284,8 +288,22 @@ class DreamProposalValidatorTest {
         type: DreamEpistemicType,
     ) = DreamProposedClaim(
         claimKeyHint = "project.offline",
-        storageClass = DreamStorageClass.EPISODIC,
-        epistemicType = type,
+        subjectKind = DreamSubjectKind.USER,
+        profileSection = "project",
+        epistemicOrigin = when (type) {
+            DreamEpistemicType.OBSERVATION -> DreamEpistemicOrigin.OBSERVED
+            DreamEpistemicType.BELIEF -> DreamEpistemicOrigin.INFERRED
+            else -> DreamEpistemicOrigin.EXPLICIT
+        },
+        contentType = when (type) {
+            DreamEpistemicType.PROJECT_STATE -> DreamContentType.PROJECT_STATE
+            DreamEpistemicType.PLAN -> DreamContentType.PLAN
+            DreamEpistemicType.CONSTRAINT -> DreamContentType.CONSTRAINT
+            DreamEpistemicType.PREFERENCE_SUMMARY -> DreamContentType.PREFERENCE
+            DreamEpistemicType.OBSERVATION,
+            DreamEpistemicType.BELIEF,
+            -> DreamContentType.OTHER
+        },
         title = "Offline project",
         statement = "The user is building an offline memory system.",
         temporalExpression = null,
@@ -296,7 +314,7 @@ class DreamProposalValidatorTest {
         input: me.rerere.rikkahub.memory.dreaming.input.DreamInputBundle,
         operations: List<DreamProposalOperation>,
     ) = DreamProposalEnvelope(
-        schemaVersion = 1,
+        schemaVersion = DREAM_PROPOSAL_SCHEMA_VERSION,
         proposalNonce = input.proposalNonce,
         baseMemoryEpoch = input.fence.baseMemoryEpoch,
         baseDreamRevision = input.fence.baseDreamRevision,

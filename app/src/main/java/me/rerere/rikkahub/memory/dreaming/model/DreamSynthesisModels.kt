@@ -12,7 +12,7 @@ import me.rerere.rikkahub.memory.MemoryTruthStatus
 import me.rerere.rikkahub.memory.dreaming.temporal.TemporalState
 import me.rerere.rikkahub.memory.dreaming.temporal.strictZoneOrNull
 
-const val DREAM_PROPOSAL_SCHEMA_VERSION = 1
+const val DREAM_PROPOSAL_SCHEMA_VERSION = 2
 const val DREAM_SNAPSHOT_SCHEMA_VERSION = 1
 const val DREAM_AUTHORITY_FINGERPRINT_VERSION = 1
 
@@ -82,6 +82,34 @@ enum class DreamEpistemicType {
     PREFERENCE_SUMMARY,
 }
 
+enum class DreamSubjectKind {
+    USER,
+    ASSISTANT,
+    RELATIONSHIP,
+}
+
+enum class DreamEpistemicOrigin {
+    EXPLICIT,
+    OBSERVED,
+    INFERRED,
+    SELF_REFLECTED,
+}
+
+enum class DreamContentType {
+    IDENTITY,
+    PREFERENCE,
+    TRAIT,
+    HABIT,
+    GOAL,
+    PROJECT_STATE,
+    PLAN,
+    CONSTRAINT,
+    RELATIONSHIP_NORM,
+    SHARED_HISTORY,
+    COMMITMENT,
+    OTHER,
+}
+
 enum class DreamSupportType {
     SUPPORTS,
     CONTRADICTS,
@@ -113,6 +141,10 @@ data class DreamSynthesisFence(
     val sourceTimezoneId: String,
     val mode: DreamSynthesisMode,
 ) {
+    /** Pair-Dream semantic names; persisted legacy run columns keep their old names for migration simplicity. */
+    val baseExperienceEpoch: Long get() = baseMemoryEpoch
+    val baseAppliedExperienceEpoch: Long get() = baseLastAppliedMemoryEpoch
+
     init {
         requireCanonicalDreamRunId(runId)
         requireDreamLeaseOwner(leaseOwner)
@@ -239,6 +271,10 @@ data class DreamClaimHead(
     val validToEpochMs: Long?,
     val versionHash: DreamSha256,
     val sources: List<DreamClaimSourcePin>,
+    val subjectKind: DreamSubjectKind = DreamSubjectKind.USER,
+    val profileSection: String = "general",
+    val epistemicOrigin: DreamEpistemicOrigin = DreamEpistemicOrigin.INFERRED,
+    val contentType: DreamContentType = DreamContentType.OTHER,
 ) {
     init {
         requireDreamStableId(claimId)
@@ -249,6 +285,7 @@ data class DreamClaimHead(
         require(validToEpochMs == null || validToEpochMs >= 0L)
         require(validFromEpochMs == null || validToEpochMs == null || validToEpochMs > validFromEpochMs)
         require(sources.size <= 4_096)
+        require(profileSection.matches(Regex("^[a-z0-9][a-z0-9._-]{0,63}$")))
         if (state == DreamClaimState.TOMBSTONED) {
             require(title.isEmpty() && statement.isEmpty() && sources.isEmpty()) {
                 "Tombstoned claims must not retain user content or provenance"
@@ -277,6 +314,10 @@ data class DreamValidatedClaimVersion(
     val validToEpochMs: Long?,
     val sources: List<DreamClaimSourcePin>,
     val reason: DreamClaimMutationReason,
+    val subjectKind: DreamSubjectKind = DreamSubjectKind.USER,
+    val profileSection: String = "general",
+    val epistemicOrigin: DreamEpistemicOrigin = DreamEpistemicOrigin.INFERRED,
+    val contentType: DreamContentType = DreamContentType.OTHER,
 ) {
     init {
         requireDreamStableId(claimId)
@@ -296,6 +337,7 @@ data class DreamValidatedClaimVersion(
             DreamClaimState.INVALID,
         ))
         require(sources.any { it.directAuthority }) { "Every synthesized claim needs direct authority provenance" }
+        require(profileSection.matches(Regex("^[a-z0-9][a-z0-9._-]{0,63}$")))
         requireDreamValidUnicode(title, statement)
     }
 }

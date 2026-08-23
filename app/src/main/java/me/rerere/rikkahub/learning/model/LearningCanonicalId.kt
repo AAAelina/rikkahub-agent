@@ -127,6 +127,29 @@ object LearningCanonicalId {
     }
 
     /**
+     * Compatibility identity for schema-v2 SOURCE_INVALIDATED rows when the legacy canonical ID
+     * collides across Learning scopes. The original v2 ID intentionally remains unchanged for
+     * already-persisted rows; this discriminator is only used as a deterministic collision lane.
+     */
+    fun scopedSourceInvalidationEventId(
+        legacyEventId: String,
+        scopeKindCode: String,
+        scopeId: String,
+    ): String {
+        require(legacyEventId.startsWith("learning-event-v2:")) {
+            "Scoped invalidation requires a legacy v2 event ID"
+        }
+        require(scopeKindCode.matches(Regex("[A-Z][A-Z0-9_]{0,63}"))) {
+            "Invalid learning scope kind code"
+        }
+        require(isSafeLearningIdentifier(scopeId, 256)) { "Invalid learning scope identifier" }
+        return "learning-source-invalidated-scope-v1:" + digest(
+            domainVersion = "learning-source-invalidated-scope-v1",
+            fields = listOf(legacyEventId, scopeKindCode, scopeId),
+        )
+    }
+
+    /**
      * Bounded authority reference for an ExecutionEvent mutation id.
      *
      * Mutation ids may be longer than the handoff source-id contract and may expose runtime

@@ -89,10 +89,12 @@
   <string name="agent_runtime_summary">实验能力默认关闭。安全门、审批规则与紧急停止始终有效。</string>
   <string name="agent_runtime_title">智能体运行时</string>
   <string name="agent_timing_details_title">Agent 性能耗时</string>
-  <string name="agent_timing_first_progress">Provider TTFT</string>
+  <string name="agent_timing_first_progress">Provider 首进度</string>
+  <string name="agent_timing_first_text">Provider 首文本</string>
   <string name="agent_timing_full_response">完整响应返回</string>
   <string name="agent_timing_long_stage">较长</string>
   <string name="agent_timing_metric_admission">提交到运行开始</string>
+  <string name="agent_timing_metric_run_preflight">生成前置准备</string>
   <string name="agent_timing_metric_approval_resolution">审批提交 / 恢复</string>
   <string name="agent_timing_metric_context">上下文准备</string>
   <string name="agent_timing_metric_context_compression">上下文压缩</string>
@@ -100,6 +102,10 @@
   <string name="agent_timing_metric_context_gate_initial">初次上下文门控</string>
   <string name="agent_timing_metric_diagnostics">请求诊断</string>
   <string name="agent_timing_metric_final_save">最终保存</string>
+  <string name="agent_timing_metric_generation_done_notify">完成通知派发</string>
+  <string name="agent_timing_metric_post_provider_processing">Provider 后处理</string>
+  <string name="agent_timing_metric_run_completion_drain">运行完成收尾</string>
+  <string name="agent_timing_metric_runtime_finalization">Runtime 持久化收尾</string>
   <string name="agent_timing_metric_first_visible_draw">首次可见绘制</string>
   <string name="agent_timing_metric_handoff">结果到下一请求的交接</string>
   <string name="agent_timing_metric_human_wait">人工审批等待</string>
@@ -108,8 +114,14 @@
   <string name="agent_timing_metric_memory_last_access">记忆最后访问更新</string>
   <string name="agent_timing_metric_memory_prompt">记忆提示词</string>
   <string name="agent_timing_metric_memory_retrieval">记忆检索</string>
+  <string name="agent_timing_metric_auto_context">自动设备上下文</string>
   <string name="agent_timing_metric_provider_prepare">Provider 准备</string>
   <string name="agent_timing_metric_provider_total">Provider 总耗时</string>
+  <string name="agent_timing_metric_provider_output_tokens">Provider 输出 Token</string>
+  <string name="agent_timing_metric_provider_decode_tps">Provider Decode 速度</string>
+  <string name="agent_timing_metric_provider_visible_stream">Provider 可见文本流（估算）</string>
+  <string name="agent_timing_metric_session_visible_stream">Session 消费流（估算）</string>
+  <string name="agent_timing_metric_ui_visible_stream">UI 可见刷新（估算）</string>
   <string name="agent_timing_metric_recent_chats">最近聊天查询</string>
   <string name="agent_timing_metric_request_breakdown_build">请求拆解构建</string>
   <string name="agent_timing_metric_request_breakdown_write">请求拆解文件写入</string>
@@ -1047,6 +1059,8 @@
   <string name="memory_dream_daily_runs_desc">所有私有和全局记忆范围共用。设为零会阻止模型运行。</string>
   <string name="memory_dream_deep">深度重建</string>
   <string name="memory_dream_epoch_summary">记忆版本 %1$d · 已应用 %2$d · Dream 版本 %3$d</string>
+  <string name="memory_dream_experience_summary">经历版本 %1$d · 已吸收 %2$d · 画像版本 %3$d · 待整理 %4$d · Dream debt %5$.2f</string>
+  <string name="memory_dream_portrait_empty">这一部分还没有形成稳定画像。</string>
   <string name="memory_dream_evidence_empty">没有可用的有效证据元数据。</string>
   <string name="memory_dream_evidence_meta">%1$s · %2$s · %3$s</string>
   <string name="memory_dream_evidence_title">Dream 为什么这样认为</string>
@@ -1093,7 +1107,7 @@
   <string name="memory_dream_status_invalid">无效</string>
   <string name="memory_dream_status_ready">就绪</string>
   <string name="memory_dream_status_running">正在更新</string>
-  <string name="memory_dream_summary_desc">根据权威记忆生成、可供你检查的理解。它绝不会替代已保存的记忆。</string>
+  <string name="memory_dream_summary_desc">从你和当前助手的共同经历中离线汇总出的长期双人画像，可查看、纠正并持续更新。</string>
   <string name="memory_dream_summary_title">Dream 概览</string>
   <string name="memory_dream_switch_off">关</string>
   <string name="memory_dream_switch_on">开</string>
