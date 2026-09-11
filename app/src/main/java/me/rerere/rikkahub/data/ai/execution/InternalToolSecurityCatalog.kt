@@ -14,6 +14,7 @@ object InternalToolSecurityCatalog {
         "conversation_list_recent",
         "conversation_read_recent",
         "memory_query",
+        "dream_view",
         "skill_get_content",
         "use_skill",
         "rikkahub_state_get",

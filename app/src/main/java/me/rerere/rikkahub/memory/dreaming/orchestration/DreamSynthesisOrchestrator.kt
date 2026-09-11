@@ -1,5 +1,6 @@
 package me.rerere.rikkahub.memory.dreaming.orchestration
 
+import android.util.Log
 import java.util.concurrent.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
@@ -26,6 +27,7 @@ import me.rerere.rikkahub.memory.dreaming.store.DreamSynthesisStore
 import me.rerere.rikkahub.memory.dreaming.store.DreamSynthesisStoreRejection
 import me.rerere.rikkahub.memory.dreaming.store.DreamSynthesisStoreResult
 import me.rerere.rikkahub.memory.dreaming.store.ReadDreamInputSeedResult
+import me.rerere.rikkahub.memory.dreaming.synthesis.DreamModelAudit
 import me.rerere.rikkahub.memory.dreaming.synthesis.DreamProposalParseResult
 import me.rerere.rikkahub.memory.dreaming.synthesis.DreamProposalParser
 import me.rerere.rikkahub.memory.dreaming.synthesis.DreamProposalValidationRequest
@@ -37,6 +39,7 @@ import me.rerere.rikkahub.memory.dreaming.synthesis.DreamSynthesizeResult
 import me.rerere.rikkahub.memory.dreaming.synthesis.DreamSynthesizer
 import me.rerere.rikkahub.memory.dreaming.synthesis.DREAM_PROMPT_CONTRACT_VERSION
 import me.rerere.rikkahub.memory.dreaming.synthesis.DREAM_VALIDATOR_VERSION
+import me.rerere.rikkahub.memory.dreaming.synthesis.forValidationRepair
 import me.rerere.rikkahub.memory.dreaming.runtime.DreamBudgetAdmissionRequest
 import me.rerere.rikkahub.memory.dreaming.runtime.DreamBudgetDenialReason
 import me.rerere.rikkahub.memory.dreaming.runtime.DreamBudgetGate
@@ -138,7 +141,8 @@ class DreamSynthesisOrchestrator(
             )
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            Log.w(DREAM_SYNTHESIS_LOG_TAG, "Dream input seed read failed for run ${fence.runId}", error)
             return DreamSynthesisRunResult.Retry(DreamSynthesisRetryReason.STORE_TEMPORARY_FAILURE)
         }
         val inputRequest = when (seed) {
@@ -242,7 +246,7 @@ class DreamSynthesisOrchestrator(
                 terminalizeRetryableModelFailure,
             )
         }
-        val success = when (synthesized) {
+        var success = when (synthesized) {
             is DreamSynthesizeResult.Success -> synthesized
             is DreamSynthesizeResult.Failure -> {
                 if (synthesized.retryable) {
@@ -261,18 +265,72 @@ class DreamSynthesisOrchestrator(
         ) {
             return failOrRetry(fence, DreamSynthesisFailure.MODEL_AUDIT_MISMATCH)
         }
-        val parsed = when (val result = DreamProposalParser.parse(success.rawOutput)) {
+        var parsed = when (val result = DreamProposalParser.parse(success.rawOutput)) {
             is DreamProposalParseResult.Parsed -> result.proposal
             is DreamProposalParseResult.Rejected -> {
                 return failOrRetry(fence, DreamSynthesisFailure.MODEL_OUTPUT_PARSE_REJECTED)
             }
         }
+        val initialValidation = validator.validate(DreamProposalValidationRequest(input, parsed))
         val plan = when (
-            val result = validator.validate(DreamProposalValidationRequest(input, parsed))
+            val result = initialValidation
         ) {
             is DreamProposalValidationResult.Valid -> result.plan
             is DreamProposalValidationResult.Rejected -> {
-                return failOrRetry(fence, DreamSynthesisFailure.MODEL_OUTPUT_VALIDATION_REJECTED)
+                logValidationRejection(fence.runId, result, repairAttempt = false)
+                val repaired = try {
+                    withLeaseHeartbeat(fence) {
+                        synthesizer.synthesize(
+                            DreamSynthesizeRequest(
+                                input = input.modelInput.forValidationRepair(result.failure),
+                                maxOutputTokens = config.maxOutputTokens,
+                                promptContractVersion = config.promptContractVersion,
+                                validatorVersion = config.validatorVersion,
+                            ),
+                        )
+                    }
+                } catch (_: LeaseLost) {
+                    return DreamSynthesisRunResult.Retry(DreamSynthesisRetryReason.LEASE_CONFLICT)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    return handleRetryableModelFailure(
+                        fence,
+                        DreamSynthesizeFailure.PROVIDER_UNAVAILABLE,
+                        terminalizeRetryableModelFailure,
+                    )
+                }
+                val repairSuccess = when (repaired) {
+                    is DreamSynthesizeResult.Success -> repaired
+                    is DreamSynthesizeResult.Failure -> {
+                        if (repaired.retryable) {
+                            return handleRetryableModelFailure(
+                                fence,
+                                repaired.reason,
+                                terminalizeRetryableModelFailure,
+                            )
+                        }
+                        return failOrRetry(fence, repaired.reason.toDurableSynthesisFailure())
+                    }
+                }
+                val combinedAudit = combineDreamModelAudits(success.audit, repairSuccess.audit)
+                    ?: return failOrRetry(fence, DreamSynthesisFailure.MODEL_AUDIT_MISMATCH)
+                success = repairSuccess.copy(audit = combinedAudit)
+                parsed = when (val repairParse = DreamProposalParser.parse(repairSuccess.rawOutput)) {
+                    is DreamProposalParseResult.Parsed -> repairParse.proposal
+                    is DreamProposalParseResult.Rejected -> {
+                        return failOrRetry(fence, DreamSynthesisFailure.MODEL_OUTPUT_PARSE_REJECTED)
+                    }
+                }
+                when (
+                    val repairedValidation = validator.validate(DreamProposalValidationRequest(input, parsed))
+                ) {
+                    is DreamProposalValidationResult.Valid -> repairedValidation.plan
+                    is DreamProposalValidationResult.Rejected -> {
+                        logValidationRejection(fence.runId, repairedValidation, repairAttempt = true)
+                        return failOrRetry(fence, DreamSynthesisFailure.MODEL_OUTPUT_VALIDATION_REJECTED)
+                    }
+                }
             }
         }
         val snapshot = try {
@@ -460,6 +518,49 @@ private sealed interface LeaseGuardResult<out T> {
 }
 
 private class LeaseLost : RuntimeException()
+
+private const val DREAM_SYNTHESIS_LOG_TAG = "DreamSynthesis"
+
+private fun logValidationRejection(
+    runId: String,
+    rejection: DreamProposalValidationResult.Rejected,
+    repairAttempt: Boolean,
+) {
+    // Local JVM tests do not provide an Android Log implementation. Diagnostics must never alter
+    // the Dream state machine merely because logging is unavailable.
+    runCatching {
+        Log.w(
+            DREAM_SYNTHESIS_LOG_TAG,
+            "Dream proposal rejected for run $runId: ${rejection.failure}; repairAttempt=$repairAttempt",
+        )
+    }
+}
+
+private fun combineDreamModelAudits(
+    first: DreamModelAudit,
+    second: DreamModelAudit,
+): DreamModelAudit? {
+    if (first.providerKind != second.providerKind ||
+        first.modelIdentityDigest != second.modelIdentityDigest ||
+        first.promptContractVersion != second.promptContractVersion ||
+        first.validatorVersion != second.validatorVersion
+    ) {
+        return null
+    }
+    return second.copy(
+        inputTokens = sumKnownTokenUsage(first.inputTokens, second.inputTokens),
+        outputTokens = sumKnownTokenUsage(first.outputTokens, second.outputTokens),
+    )
+}
+
+private fun sumKnownTokenUsage(first: Int?, second: Int?): Int? {
+    if (first == null || second == null) return null
+    return try {
+        Math.addExact(first, second)
+    } catch (_: ArithmeticException) {
+        null
+    }
+}
 
 private fun DreamSynthesizeFailure.toDurableSynthesisFailure(): DreamSynthesisFailure = when (this) {
     DreamSynthesizeFailure.PROVIDER_UNAVAILABLE -> DreamSynthesisFailure.MODEL_PROVIDER_UNAVAILABLE

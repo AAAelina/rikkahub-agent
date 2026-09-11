@@ -29,65 +29,71 @@ fun DreamExperienceEntity.toDreamInputCandidate(
     origin: DreamInputCandidateOrigin,
     json: Json,
 ): DreamInputCandidate? {
-    if (status == "DISCARDED") return null
-    val sources = if (sourceKind == "CONVERSATION") {
-        runCatching { json.decodeFromString<List<DreamExperienceSourceManifestEntry>>(sourceManifestJson) }
-            .getOrNull()
-            ?.mapNotNull { it.toAuthoritySourceOrNull() }
-            ?: return null
-    } else {
-        emptyList()
+    return try {
+        if (status == "DISCARDED") return null
+        val sources = if (sourceKind == "CONVERSATION") {
+            runCatching { json.decodeFromString<List<DreamExperienceSourceManifestEntry>>(sourceManifestJson) }
+                .getOrNull()
+                ?.mapNotNull { it.toAuthoritySourceOrNull() }
+                ?: return null
+        } else {
+            emptyList()
+        }
+        val authority = DreamAuthorityMemory(
+            scopeId = scopeId,
+            memoryId = experienceId,
+            revision = experienceEpoch,
+            title = experienceKind.replace('_', ' ').lowercase().replaceFirstChar(Char::uppercase),
+            content = summary,
+            kind = experienceKind.toMemoryKind(),
+            attribution = actor.toAttribution(),
+            truthStatus = MemoryTruthStatus.CONFIRMED,
+            lifecycleStatus = MemoryLifecycleStatus.ACTIVE,
+            approvalSource = if (sources.isEmpty()) MemoryApprovalSource.USER_REVIEWED else MemoryApprovalSource.AUTO_SAFE,
+            tags = listOf("dream_experience", experienceKind.lowercase()),
+            createdAtEpochMs = occurredAtMs,
+            updatedAtEpochMs = ingestedAtMs,
+            occurredAtEpochMs = occurredAtMs,
+            expiresAtEpochMs = null,
+            originAssistantId = null,
+            participants = when (actor) {
+                "USER" -> listOf("USER")
+                "ASSISTANT" -> listOf("ASSISTANT")
+                else -> listOf("USER", "ASSISTANT")
+            },
+            outcome = null,
+            sources = sources,
+            tombstoned = false,
+        )
+        val pin = DreamAuthorityPin(
+            scopeId = scopeId,
+            memoryId = experienceId,
+            expectedRevision = experienceEpoch,
+            expectedAuthorityFingerprint = DreamAuthorityFingerprintV1.compute(authority),
+            expectedSourceManifestHash = DreamAuthorityFingerprintV1.sourceManifestHash(sources),
+        )
+        DreamInputCandidate(
+            origin = origin,
+            memory = authority,
+            pin = pin,
+            sourceLocators = sources.map { source ->
+                DreamSourceLocator(
+                    scopeId = scopeId,
+                    conversationId = source.conversationId,
+                    messageId = source.messageId,
+                    role = source.role,
+                    sourceKind = source.sourceKind,
+                    expectedConsumedTextDigest = source.consumedTextDigest,
+                    evidenceGroupId = source.evidenceGroupId,
+                )
+            },
+            requireSourceReread = sources.isNotEmpty(),
+        )
+    } catch (_: Exception) {
+        // One legacy/corrupt Experience must not abort the complete Pair Dream seed. The bounded
+        // synthesis query keeps enough reserve rows for malformed candidates to be skipped safely.
+        null
     }
-    val authority = DreamAuthorityMemory(
-        scopeId = scopeId,
-        memoryId = experienceId,
-        revision = experienceEpoch,
-        title = experienceKind.replace('_', ' ').lowercase().replaceFirstChar(Char::uppercase),
-        content = summary,
-        kind = experienceKind.toMemoryKind(),
-        attribution = actor.toAttribution(),
-        truthStatus = MemoryTruthStatus.CONFIRMED,
-        lifecycleStatus = MemoryLifecycleStatus.ACTIVE,
-        approvalSource = if (sources.isEmpty()) MemoryApprovalSource.USER_REVIEWED else MemoryApprovalSource.AUTO_SAFE,
-        tags = listOf("dream_experience", experienceKind.lowercase()),
-        createdAtEpochMs = occurredAtMs,
-        updatedAtEpochMs = ingestedAtMs,
-        occurredAtEpochMs = occurredAtMs,
-        expiresAtEpochMs = null,
-        originAssistantId = null,
-        participants = when (actor) {
-            "USER" -> listOf("USER")
-            "ASSISTANT" -> listOf("ASSISTANT")
-            else -> listOf("USER", "ASSISTANT")
-        },
-        outcome = null,
-        sources = sources,
-        tombstoned = false,
-    )
-    val pin = DreamAuthorityPin(
-        scopeId = scopeId,
-        memoryId = experienceId,
-        expectedRevision = experienceEpoch,
-        expectedAuthorityFingerprint = DreamAuthorityFingerprintV1.compute(authority),
-        expectedSourceManifestHash = DreamAuthorityFingerprintV1.sourceManifestHash(sources),
-    )
-    return DreamInputCandidate(
-        origin = origin,
-        memory = authority,
-        pin = pin,
-        sourceLocators = sources.map { source ->
-            DreamSourceLocator(
-                scopeId = scopeId,
-                conversationId = source.conversationId,
-                messageId = source.messageId,
-                role = source.role,
-                sourceKind = source.sourceKind,
-                expectedConsumedTextDigest = source.consumedTextDigest,
-                evidenceGroupId = source.evidenceGroupId,
-            )
-        },
-        requireSourceReread = sources.isNotEmpty(),
-    )
 }
 
 private fun DreamExperienceSourceManifestEntry.toAuthoritySourceOrNull(): DreamAuthoritySource? = try {

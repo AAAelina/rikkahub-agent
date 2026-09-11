@@ -336,6 +336,56 @@ class DreamSynthesisOrchestratorTest {
     }
 
     @Test
+    fun `validation rejection gets one bounded regeneration and aggregates usage`() = runBlocking {
+        val fixture = fixture()
+        val requests = mutableListOf<me.rerere.rikkahub.memory.dreaming.synthesis.DreamSynthesizeRequest>()
+        val wrongNonce = noOpJson().replace(
+            "p_${"N".repeat(43)}",
+            "p_${"X".repeat(43)}",
+        )
+
+        val result = fixture.orchestrator(
+            DreamSynthesizer { request ->
+                requests += request
+                DreamSynthesizeResult.Success(
+                    rawOutput = if (requests.size == 1) wrongNonce else noOpJson(),
+                    audit = audit(),
+                )
+            },
+        ).run(beginRequest())
+
+        assertTrue(result is DreamSynthesisRunResult.Completed)
+        assertEquals(2, requests.size)
+        assertTrue(requests[1].input.systemContract.contains("NONCE_MISMATCH"))
+        assertEquals(20, fixture.store.commits.single().modelAudit.inputTokens)
+        assertEquals(10, fixture.store.commits.single().modelAudit.outputTokens)
+    }
+
+    @Test
+    fun `validation repair is attempted at most once`() = runBlocking {
+        val fixture = fixture()
+        var providerCalls = 0
+        val wrongNonce = noOpJson().replace(
+            "p_${"N".repeat(43)}",
+            "p_${"X".repeat(43)}",
+        )
+
+        val result = fixture.orchestrator(
+            DreamSynthesizer {
+                providerCalls++
+                DreamSynthesizeResult.Success(wrongNonce, audit())
+            },
+        ).run(beginRequest())
+
+        assertEquals(2, providerCalls)
+        assertEquals(
+            me.rerere.rikkahub.memory.dreaming.store.DreamSynthesisFailure.MODEL_OUTPUT_VALIDATION_REJECTED,
+            (result as DreamSynthesisRunResult.Failed).reason,
+        )
+        assertTrue(fixture.store.commits.isEmpty())
+    }
+
+    @Test
     fun `real built input estimate is budgeted before provider and denial is not model failure`() = runBlocking {
         val fixture = fixture()
         var providerCalled = false

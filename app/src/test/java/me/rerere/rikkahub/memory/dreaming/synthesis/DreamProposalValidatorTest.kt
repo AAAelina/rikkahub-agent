@@ -33,6 +33,34 @@ class DreamProposalValidatorTest {
     }
 
     @Test
+    fun `pair metadata survives validated version to resulting head projection`() = runBlocking {
+        val input = DreamingTestFixtures.input()
+        val proposed = proposedClaim(
+            input.allowedMemories.keys.single(),
+            DreamEpistemicType.BELIEF,
+        ).copy(
+            subjectKind = DreamSubjectKind.ASSISTANT,
+            profileSection = "identity",
+            epistemicOrigin = DreamEpistemicOrigin.EXPLICIT,
+            contentType = DreamContentType.IDENTITY,
+        )
+        val proposal = envelope(
+            input,
+            listOf(DreamProposalOperation.UpsertClaim(null, null, proposed)),
+        )
+
+        val result = validator.validate(DreamProposalValidationRequest(input, proposal))
+            as DreamProposalValidationResult.Valid
+        val version = result.plan.upserts.single()
+        val head = result.plan.resultingClaims.single()
+
+        assertEquals(version.subjectKind, head.subjectKind)
+        assertEquals(version.profileSection, head.profileSection)
+        assertEquals(version.epistemicOrigin, head.epistemicOrigin)
+        assertEquals(version.contentType, head.contentType)
+    }
+
+    @Test
     fun `inferred portrait claim is active with reduced confidence when evidence is clean`() = runBlocking {
         val input = DreamingTestFixtures.input()
         val result = validator.validate(

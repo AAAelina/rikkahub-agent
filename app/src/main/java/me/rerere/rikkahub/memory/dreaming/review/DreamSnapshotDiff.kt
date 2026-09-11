@@ -12,10 +12,14 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.longOrNull
 import me.rerere.rikkahub.memory.dreaming.model.DREAM_SNAPSHOT_SCHEMA_VERSION
 import me.rerere.rikkahub.memory.dreaming.model.DreamCanonicalJson
+import me.rerere.rikkahub.memory.dreaming.model.DreamContentType
+import me.rerere.rikkahub.memory.dreaming.model.DreamEpistemicOrigin
 import me.rerere.rikkahub.memory.dreaming.model.DreamEpistemicType
+import me.rerere.rikkahub.memory.dreaming.model.DreamPairScopeId
 import me.rerere.rikkahub.memory.dreaming.model.DreamScopeId
 import me.rerere.rikkahub.memory.dreaming.model.DreamSha256
 import me.rerere.rikkahub.memory.dreaming.model.DreamStorageClass
+import me.rerere.rikkahub.memory.dreaming.model.DreamSubjectKind
 import me.rerere.rikkahub.memory.dreaming.model.requireDreamStableId
 import me.rerere.rikkahub.memory.dreaming.snapshot.DreamSnapshotSection
 import me.rerere.rikkahub.memory.dreaming.temporal.TemporalState
@@ -139,7 +143,7 @@ object DreamSnapshotDiff {
         }
         val sections = root["sections"] as? JsonObject
             ?: return ParsedResult.Failure(DreamSnapshotDiffFailure.MANIFEST_INVALID)
-        if (sections.keys != SECTION_KEYS) {
+        if (sections.keys !in COMPATIBLE_SECTION_KEYS) {
             return ParsedResult.Failure(DreamSnapshotDiffFailure.MANIFEST_INVALID)
         }
         val references = hashSetOf<Pair<String, Int>>()
@@ -187,7 +191,12 @@ object DreamSnapshotDiff {
             }
             val fragment = (sections[sectionName] as? JsonArray)?.getOrNull(ordinal) as? JsonObject
                 ?: return ParsedResult.Failure(DreamSnapshotDiffFailure.FRAGMENT_INVALID)
-            if (fragment.keys != FRAGMENT_KEYS || DreamCanonicalJson.sha256(fragment) != expectedFragmentHash) {
+            val compatibleFragmentKeys = if (DreamPairScopeId.parseOrNull(document.scopeId.value) != null) {
+                PAIR_FRAGMENT_KEYS
+            } else {
+                setOf(LEGACY_FRAGMENT_KEYS)
+            }
+            if (fragment.keys !in compatibleFragmentKeys || DreamCanonicalJson.sha256(fragment) != expectedFragmentHash) {
                 return ParsedResult.Failure(DreamSnapshotDiffFailure.FRAGMENT_INVALID)
             }
             val parsedFragment = parseFragment(claimId, revision, section, expectedFragmentHash, fragment)
@@ -224,6 +233,13 @@ object DreamSnapshotDiff {
             fragment.string("epistemic_type")?.let { raw -> DreamEpistemicType.entries.none { it.name == raw } } != false ||
             fragment.string("storage_class")?.let { raw -> DreamStorageClass.entries.none { it.name == raw } } != false
         ) return null
+        if (fragment.keys == PAIR_FRAGMENT_KEYS_V2) {
+            if (fragment.string("subject_kind")?.let { raw -> DreamSubjectKind.entries.none { it.name == raw } } != false ||
+                fragment.string("epistemic_origin")?.let { raw -> DreamEpistemicOrigin.entries.none { it.name == raw } } != false ||
+                fragment.string("content_type")?.let { raw -> DreamContentType.entries.none { it.name == raw } } != false ||
+                fragment.string("profile_section")?.matches(PROFILE_SECTION_PATTERN) != true
+            ) return null
+        }
         return ParsedClaim(
             claimId = claimId,
             revision = revision,
@@ -300,9 +316,17 @@ private fun comparePosition(left: Pair<Int, Int>, right: Pair<Int, Int>): Int =
 private val JSON = Json { isLenient = false; ignoreUnknownKeys = false }
 private const val MAX_REVIEW_SNAPSHOT_BYTES = 2 * 1_024 * 1_024
 private val ROOT_KEYS = setOf("compiler_revision", "manifest", "schema_version", "sections")
-private val SECTION_KEYS = DreamSnapshotSection.entries.mapTo(linkedSetOf(), DreamSnapshotSection::wireName)
+private val SECTION_KEYS_V2 = DreamSnapshotSection.entries.mapTo(linkedSetOf(), DreamSnapshotSection::wireName)
+private val SECTION_KEYS_V1 = linkedSetOf(
+    DreamSnapshotSection.PROFILE.wireName,
+    DreamSnapshotSection.CURRENT_PROJECTS.wireName,
+    DreamSnapshotSection.ACTIVE_PLANS.wireName,
+    DreamSnapshotSection.ACTIVE_CONSTRAINTS.wireName,
+    DreamSnapshotSection.OTHER_CONTEXT.wireName,
+)
+private val COMPATIBLE_SECTION_KEYS = setOf(SECTION_KEYS_V1, SECTION_KEYS_V2)
 private val MANIFEST_KEYS = setOf("claim_id", "claim_revision", "fragment_hash", "ordinal", "section")
-private val FRAGMENT_KEYS = setOf(
+private val LEGACY_FRAGMENT_KEYS = setOf(
     "claim_key",
     "confidence_permille",
     "epistemic_type",
@@ -313,3 +337,11 @@ private val FRAGMENT_KEYS = setOf(
     "valid_from_epoch_ms",
     "valid_to_epoch_ms",
 )
+private val PAIR_FRAGMENT_KEYS_V2 = LEGACY_FRAGMENT_KEYS + setOf(
+    "content_type",
+    "epistemic_origin",
+    "profile_section",
+    "subject_kind",
+)
+private val PAIR_FRAGMENT_KEYS = setOf(LEGACY_FRAGMENT_KEYS, PAIR_FRAGMENT_KEYS_V2)
+private val PROFILE_SECTION_PATTERN = Regex("^[a-z0-9][a-z0-9._-]{0,63}$")

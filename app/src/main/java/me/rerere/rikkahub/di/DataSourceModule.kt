@@ -575,7 +575,7 @@ val dataSourceModule = module {
             validator = get(),
             clock = get(),
             config = DreamSynthesisOrchestratorConfig(
-                compilerRevision = "dream-snapshot-compiler-v1",
+                compilerRevision = "dream-snapshot-compiler-v2",
                 // Dream output is strict JSON, but reasoning-capable OpenCode/DeepSeek V4 models
                 // cannot actually disable reasoning: LOW/OFF normalize to the provider's `high`
                 // effort. 2k can therefore be exhausted by reasoning before a JSON answer is

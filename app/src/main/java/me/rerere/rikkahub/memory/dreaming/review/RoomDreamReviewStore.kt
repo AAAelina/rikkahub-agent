@@ -62,6 +62,7 @@ import me.rerere.rikkahub.memory.dreaming.model.DreamSupportType
 import me.rerere.rikkahub.memory.dreaming.model.DreamValidatedClaimVersion
 import me.rerere.rikkahub.memory.dreaming.model.requireCanonicalDreamRunId
 import me.rerere.rikkahub.memory.dreaming.runtime.DreamingFeatureFlagSource
+import me.rerere.rikkahub.memory.dreaming.snapshot.DreamPairSnapshotCompatibility
 import me.rerere.rikkahub.memory.dreaming.snapshot.DreamSnapshotCompileRequest
 import me.rerere.rikkahub.memory.dreaming.snapshot.DreamSnapshotCompiler
 import me.rerere.rikkahub.memory.dreaming.snapshot.DreamSnapshotSection
@@ -562,12 +563,32 @@ class RoomDreamReviewStore(
             } catch (_: Exception) {
                 return invalidProjection(scopeId, state, usageMode)
             }
-            if (active.canonicalPayloadJson != expected.payloadJson ||
-                active.payloadSha256 != expected.payloadHash.value ||
-                active.claimCount != expected.claimCount ||
-                active.estimatedTokens != expected.estimatedTokens
-            ) {
-                return invalidProjection(scopeId, state, usageMode)
+            val exactSnapshot = active.canonicalPayloadJson == expected.payloadJson &&
+                active.payloadSha256 == expected.payloadHash.value &&
+                active.claimCount == expected.claimCount &&
+                active.estimatedTokens == expected.estimatedTokens
+            if (!exactSnapshot) {
+                val storedBytes = active.canonicalPayloadJson.encodeToByteArray()
+                val storedPayloadIsSelfConsistent =
+                    DreamCanonicalJson.sha256(storedBytes).value == active.payloadSha256 &&
+                        ((storedBytes.size + 3) / 4) == active.estimatedTokens
+                val legacyPairMetadataDrift = storedPayloadIsSelfConsistent &&
+                    active.claimCount == expected.claimCount &&
+                    DreamPairSnapshotCompatibility.isLegacyV1MetadataProjectionDrift(
+                        scopeId = scopeId,
+                        compilerRevision = active.compilerRevision,
+                        storedPayloadJson = active.canonicalPayloadJson,
+                        expectedPayloadJson = expected.payloadJson,
+                    )
+                if (!legacyPairMetadataDrift) {
+                    return invalidProjection(scopeId, state, usageMode)
+                }
+                // v1 Pair snapshots produced by the validator-head projection bug are internally
+                // self-consistent but classify newly mutated claims with the old default metadata.
+                // The durable ClaimVersions/heads are authoritative and have already passed the
+                // full provenance reconstruction above, so keep the portrait visible in degraded
+                // compatibility mode until the next fixed synthesis writes a v2 snapshot.
+                degraded = true
             }
         }
         val superseded = active?.supersedesSnapshotId?.let { previousId ->
@@ -579,7 +600,10 @@ class RoomDreamReviewStore(
         }
         val diff = snapshotDiff(scopeId, superseded, active)
         if (diff is DreamSnapshotDiffResult.Unavailable) {
-            return invalidProjection(scopeId, state, usageMode, diff)
+            // The active Pair snapshot has already been recompiled and byte-checked above. A
+            // legacy/corrupt superseded snapshot can make only the historical diff unreadable; it
+            // must not hide an otherwise valid current portrait.
+            degraded = true
         }
         if (active != null && active.manifestReferencesOrNull() !=
             activeHeads.map { head -> head.claimId to head.revision }.toSet()
@@ -587,12 +611,15 @@ class RoomDreamReviewStore(
             return invalidProjection(scopeId, state, usageMode)
         }
         val runs = dreamDao.listRecentRuns(scopeId.value, DREAM_REVIEW_MAX_RECENT_RUNS + 1)
-        if (runs.size > DREAM_REVIEW_MAX_RECENT_RUNS || !runsAreConsistent(state, runs)) {
+        if (runs.size > DREAM_REVIEW_MAX_RECENT_RUNS) {
             return invalidProjection(scopeId, state, usageMode, diff)
         }
-        val hasLiveRun = state.activeRunId != null &&
-            state.activeRunLeaseUntilMs?.let { leaseUntil -> leaseUntil > projectionNowMs } == true
-        if (state.activeRunId != null && !hasLiveRun) degraded = true
+        val runConsistency = pairRunConsistency(state, runs, projectionNowMs)
+        if (runConsistency == PairRunConsistency.INVALID) {
+            return invalidProjection(scopeId, state, usageMode, diff)
+        }
+        val hasLiveRun = runConsistency == PairRunConsistency.LIVE
+        if (runConsistency == PairRunConsistency.STALE) degraded = true
         val empty = summaries.isEmpty() && active == null && state.activeRunId == null
         val status = when {
             hasLiveRun -> DreamDerivedStatus.RUNNING
@@ -1770,6 +1797,45 @@ private fun runsAreConsistent(state: MemoryScopeStateEntity, runs: List<DreamRun
         run.startedAtMs != null && run.finishedAtMs == null && run.failureCode == null &&
         run.leaseUntilMs == state.activeRunLeaseUntilMs &&
         runs.count { candidate -> candidate.status == "RUNNING" } == 1
+}
+
+private enum class PairRunConsistency {
+    IDLE,
+    LIVE,
+    STALE,
+    INVALID,
+}
+
+/**
+ * Pair state and its durable run mirror can be finalized in separate recovery steps. A terminal
+ * mirror with a stale state pointer is degraded bookkeeping, not portrait corruption, and must not
+ * hide an otherwise byte-validated Pair snapshot.
+ */
+private fun pairRunConsistency(
+    state: MemoryScopeStateEntity,
+    runs: List<DreamRunEntity>,
+    nowMs: Long,
+): PairRunConsistency {
+    val running = runs.filter { run -> run.status == "RUNNING" }
+    val activeId = state.activeRunId
+    if (activeId == null) {
+        return if (state.activeRunLeaseUntilMs == null && running.isEmpty()) {
+            PairRunConsistency.IDLE
+        } else {
+            PairRunConsistency.INVALID
+        }
+    }
+    val active = runs.singleOrNull { run -> run.runId == activeId }
+    val live = active != null && state.activeRunLeaseUntilMs?.let { leaseUntil -> leaseUntil > nowMs } == true &&
+        active.status == "RUNNING" && active.leaseOwner?.isNotBlank() == true &&
+        active.startedAtMs != null && active.finishedAtMs == null && active.failureCode == null &&
+        active.leaseUntilMs == state.activeRunLeaseUntilMs && running.size == 1
+    if (live) return PairRunConsistency.LIVE
+    return if (running.isEmpty() && active?.status != "RUNNING") {
+        PairRunConsistency.STALE
+    } else {
+        PairRunConsistency.INVALID
+    }
 }
 
 private fun DreamRunEntity.toUsageSummaryOrNull(): DreamRunUsageSummary? = try {

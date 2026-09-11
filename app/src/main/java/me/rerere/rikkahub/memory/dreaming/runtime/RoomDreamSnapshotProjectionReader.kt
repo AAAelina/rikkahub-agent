@@ -46,6 +46,7 @@ import me.rerere.rikkahub.memory.dreaming.model.DreamValidatedClaimVersion
 import me.rerere.rikkahub.memory.dreaming.experience.toDreamInputCandidate
 import me.rerere.rikkahub.memory.dreaming.input.DreamInputCandidateOrigin
 import me.rerere.rikkahub.memory.dreaming.model.requireDreamStableId
+import me.rerere.rikkahub.memory.dreaming.snapshot.DreamPairSnapshotCompatibility
 import me.rerere.rikkahub.memory.dreaming.snapshot.DreamSnapshotCompileLimits
 import me.rerere.rikkahub.memory.dreaming.snapshot.DreamSnapshotCompileRequest
 import me.rerere.rikkahub.memory.dreaming.snapshot.DreamSnapshotCompiler
@@ -357,12 +358,25 @@ class RoomDreamSnapshotProjectionReader(
         } catch (_: Exception) {
             return unavailable(DreamSnapshotProjectionUnavailableReason.PAYLOAD_PARSE_FAILED)
         }
-        if (compiled.payloadJson != snapshot.canonicalPayloadJson ||
-            compiled.payloadHash != storedPayloadHash || compiled.claimCount != snapshot.claimCount ||
-            compiled.estimatedTokens != snapshot.estimatedTokens
-        ) {
+        val exactSnapshot = compiled.payloadJson == snapshot.canonicalPayloadJson &&
+            compiled.payloadHash == storedPayloadHash && compiled.claimCount == snapshot.claimCount &&
+            compiled.estimatedTokens == snapshot.estimatedTokens
+        val legacyPairMetadataDrift = !exactSnapshot && compiled.claimCount == snapshot.claimCount &&
+            DreamPairSnapshotCompatibility.isLegacyV1MetadataProjectionDrift(
+                scopeId = scope,
+                compilerRevision = snapshot.compilerRevision,
+                storedPayloadJson = snapshot.canonicalPayloadJson,
+                expectedPayloadJson = compiled.payloadJson,
+            )
+        if (!exactSnapshot && !legacyPairMetadataDrift) {
             return unavailable(DreamSnapshotProjectionUnavailableReason.PAYLOAD_HASH_INVALID)
         }
+        // For the narrowly recognized v1 Pair metadata projection bug, the persisted ClaimVersion
+        // graph is authoritative and has just passed exact Experience/source verification above.
+        // Bind the runtime context/cache to the deterministic reconstruction rather than to the
+        // historically misclassified snapshot bytes. A later fixed synthesis will replace it with
+        // a normal v2 snapshot and this branch stops applying automatically.
+        val projectionPayloadHash = if (legacyPairMetadataDrift) compiled.payloadHash else storedPayloadHash
         val claimsById = claims.associateBy(DreamClaimEntity::claimId)
         val projectionClaims = compiled.manifest.map { manifest ->
             val current = claimsById[manifest.claimId]
@@ -412,10 +426,10 @@ class RoomDreamSnapshotProjectionReader(
             currentMemoryEpoch = state.experienceEpoch,
             committedDreamRevision = snapshot.committedDreamRevision,
             currentDreamRevision = state.profileRevision,
-            payloadHash = storedPayloadHash,
+            payloadHash = projectionPayloadHash,
             payloadIntegrity = DreamRuntimePayloadIntegrity.VERIFIED,
             snapshotCompilerRevision = snapshot.compilerRevision,
-            expectedClaimCount = snapshot.claimCount,
+            expectedClaimCount = compiled.claimCount,
             readConsistency = DreamRuntimeReadConsistency.ATOMIC,
             claims = projectionClaims,
         )

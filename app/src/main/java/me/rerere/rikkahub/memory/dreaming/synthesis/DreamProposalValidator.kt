@@ -463,6 +463,10 @@ class DreamProposalValidator(
             validToEpochMs = validToEpochMs,
             versionHash = canonicalVersion.contentHash,
             sources = sources,
+            subjectKind = subjectKind,
+            profileSection = profileSection,
+            epistemicOrigin = epistemicOrigin,
+            contentType = contentType,
         )
     }
 

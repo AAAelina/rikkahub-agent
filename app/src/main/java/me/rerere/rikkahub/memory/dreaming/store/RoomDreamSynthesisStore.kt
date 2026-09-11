@@ -321,17 +321,12 @@ class RoomDreamSynthesisStore(
                 } else {
                     fence.baseAppliedExperienceEpoch
                 }
-                val experiences = experienceDao.listExperiences(
+                val experiences = experienceDao.listSynthesisExperiences(
                     pairScopeId = fence.scopeId.value,
                     afterExclusiveEpoch = fromExclusive,
                     throughInclusiveEpoch = fence.baseExperienceEpoch,
-                    limit = MAX_DREAM_INPUT_CANDIDATES + 1,
+                    limit = MAX_PAIR_DREAM_INPUT_CANDIDATE_SCAN,
                 )
-                if (experiences.size > MAX_DREAM_INPUT_CANDIDATES) {
-                    return@withTransaction ReadDreamInputSeedResult.Rejected(
-                        DreamSynthesisStoreRejection.STORE_CORRUPTION,
-                    )
-                }
                 val candidates = experiences.mapNotNull { experience ->
                     experience.toDreamInputCandidate(
                         scopeId = fence.scopeId,
@@ -342,7 +337,7 @@ class RoomDreamSynthesisStore(
                         },
                         json = json,
                     )
-                }
+                }.take(DREAM_SYNTHESIS_INPUT_BUDGET.maxMemories)
                 val invalidations = deterministicInvalidations(allClaims, fence)
                     ?: return@withTransaction ReadDreamInputSeedResult.Rejected(
                         DreamSynthesisStoreRejection.STORE_CORRUPTION,
@@ -1558,6 +1553,7 @@ private fun abort(reason: DreamSynthesisCommitRejection): Nothing = throw Commit
 
 private const val DREAM_SYNTHESIS_INITIAL_LEASE_MS = 15L * 60_000L
 private const val MAX_DREAM_INPUT_CANDIDATES = 8_192
+private const val MAX_PAIR_DREAM_INPUT_CANDIDATE_SCAN = 512
 private const val MAX_DREAM_CLAIMS = 10_000
 private const val DREAM_MEMORY_ID_QUERY_CHUNK = 500
 private const val SYNTHESIS_COMMIT_REASON = "DREAM_SYNTHESIS_COMMIT"

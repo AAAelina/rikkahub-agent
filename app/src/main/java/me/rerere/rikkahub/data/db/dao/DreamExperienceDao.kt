@@ -40,6 +40,29 @@ interface DreamExperienceDao {
         limit: Int,
     ): List<DreamExperienceEntity>
 
+    /**
+     * Returns a bounded, deterministic synthesis working set instead of materializing the entire
+     * pair ledger in one Room transaction. Explicit user corrections/rejections are authoritative
+     * and therefore lead the set; the remaining rows are ranked by their persisted Dream signal.
+     */
+    @Query(
+        "SELECT * FROM dream_experiences WHERE pair_scope_id = :pairScopeId " +
+            "AND experience_epoch > :afterExclusiveEpoch AND experience_epoch <= :throughInclusiveEpoch " +
+            "AND status != 'DISCARDED' ORDER BY " +
+            "CASE WHEN experience_kind IN ('USER_CORRECTION', 'USER_REJECTION') THEN 0 ELSE 1 END ASC, " +
+            "CASE WHEN experience_kind IN ('USER_CORRECTION', 'USER_REJECTION') " +
+            "THEN experience_epoch ELSE NULL END DESC, " +
+            "(salience + novelty + identity_weight + relationship_weight + emotional_weight) DESC, " +
+            "experience_epoch DESC, experience_id ASC " +
+            "LIMIT CASE WHEN :limit < 0 THEN 0 ELSE :limit END",
+    )
+    suspend fun listSynthesisExperiences(
+        pairScopeId: String,
+        afterExclusiveEpoch: Long,
+        throughInclusiveEpoch: Long,
+        limit: Int,
+    ): List<DreamExperienceEntity>
+
     @Query(
         "SELECT COUNT(*) FROM dream_experiences WHERE pair_scope_id = :pairScopeId " +
             "AND experience_epoch > :afterExclusiveEpoch AND status != 'DISCARDED'",
@@ -147,7 +170,11 @@ interface DreamExperienceDao {
         "UPDATE dream_experience_state SET active_run_id = NULL, active_run_lease_until_ms = NULL, " +
             "updated_at_ms = MAX(updated_at_ms, :nowMs), last_reason_code = :reasonCode " +
             "WHERE active_run_id IS NOT NULL AND (active_run_lease_until_ms IS NULL " +
-            "OR active_run_lease_until_ms <= :nowMs)",
+            "OR active_run_lease_until_ms <= :nowMs OR NOT EXISTS (" +
+            "SELECT 1 FROM dream_runs r WHERE r.run_id = dream_experience_state.active_run_id " +
+            "AND r.scope_id = dream_experience_state.pair_scope_id AND r.status = 'RUNNING' " +
+            "AND r.lease_until_ms = dream_experience_state.active_run_lease_until_ms " +
+            "AND r.lease_until_ms > :nowMs))",
     )
     suspend fun recoverExpiredLeases(nowMs: Long, reasonCode: String): Int
 

@@ -11,7 +11,7 @@ import me.rerere.rikkahub.memory.dreaming.model.DreamSupportType
 import me.rerere.rikkahub.memory.dreaming.model.DreamSynthesisMode
 import me.rerere.rikkahub.memory.dreaming.model.requireDreamValidUnicode
 
-const val DREAM_PROMPT_CONTRACT_VERSION = "dream-pair-proposal-v2"
+const val DREAM_PROMPT_CONTRACT_VERSION = "dream-pair-proposal-v3"
 const val DREAM_VALIDATOR_VERSION = "dream-pair-validator-v2"
 
 data class DreamProposalEnvelope(
