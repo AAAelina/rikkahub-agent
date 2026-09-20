@@ -59,7 +59,11 @@ class RoomDreamSnapshotProjectionReaderContractTest {
             ApplicationProvider.getApplicationContext(),
             AppDatabase::class.java,
         ).build()
-        reader = RoomDreamSnapshotProjectionReader(database, database.dreamSynthesisDao())
+        reader = RoomDreamSnapshotProjectionReader(
+            database,
+            database.dreamSynthesisDao(),
+            database.dreamExperienceDao(),
+        )
     }
 
     @After

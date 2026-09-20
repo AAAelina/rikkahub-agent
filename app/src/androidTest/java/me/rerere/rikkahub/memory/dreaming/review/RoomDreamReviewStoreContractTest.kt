@@ -67,6 +67,7 @@ class RoomDreamReviewStoreContractTest {
         store = RoomDreamReviewStore(
             database = db,
             dreamDao = db.dreamDao(),
+            experienceDao = db.dreamExperienceDao(),
             synthesisDao = db.dreamSynthesisDao(),
             memoryDao = db.memoryDao(),
             memoryV2Dao = db.memoryV2Dao(),

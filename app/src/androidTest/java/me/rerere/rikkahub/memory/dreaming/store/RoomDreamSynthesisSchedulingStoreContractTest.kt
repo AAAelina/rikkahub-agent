@@ -29,7 +29,11 @@ class RoomDreamSynthesisSchedulingStoreContractTest {
             ApplicationProvider.getApplicationContext(),
             AppDatabase::class.java,
         ).build()
-        store = RoomDreamSynthesisSchedulingStore(database, database.dreamDao())
+        store = RoomDreamSynthesisSchedulingStore(
+            database,
+            database.dreamDao(),
+            database.dreamExperienceDao(),
+        )
     }
 
     @After
