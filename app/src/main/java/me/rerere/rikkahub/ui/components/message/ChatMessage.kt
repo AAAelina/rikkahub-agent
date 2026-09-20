@@ -120,7 +120,7 @@ fun ChatMessage(
     onEdit: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
-    onUpdate: (MessageNode) -> Unit,
+    onUpdate: (kotlin.uuid.Uuid, kotlin.uuid.Uuid) -> Unit,
     onHelpfulFeedback: ((UIMessage) -> Unit)? = null,
     onNotHelpfulFeedback: ((UIMessage) -> Unit)? = null,
     isFavorite: Boolean = false,

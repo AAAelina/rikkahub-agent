@@ -28,6 +28,7 @@ import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.data.files.SkillMetadata
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.repository.ConversationMetadataMutation
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.ui.components.ai.ExtensionEmptyState
 import me.rerere.rikkahub.ui.components.ai.LorebooksContent
@@ -44,7 +45,7 @@ fun ExtensionSelector(
     settings: Settings,
     onUpdate: (Assistant) -> Unit,
     conversation: Conversation? = null,
-    onUpdateConversation: ((Conversation) -> Unit)? = null,
+    onUpdateConversation: ((ConversationMetadataMutation) -> Unit)? = null,
     onNavigateToQuickMessages: () -> Unit = {},
     onNavigateToPrompts: () -> Unit = {},
     onNavigateToSkills: () -> Unit = {},
@@ -156,7 +157,7 @@ fun ExtensionSelector(
                                     selectedModeInjectionIds - id
                                 }
                                 if (useConversationInjections) {
-                                    onUpdateConversation(conversation.copy(modeInjectionIds = newIds))
+                                    onUpdateConversation(ConversationMetadataMutation.Mode(id, checked))
                                 } else {
                                     onUpdate(assistant.copy(modeInjectionIds = newIds))
                                 }
@@ -184,7 +185,7 @@ fun ExtensionSelector(
                                     selectedLorebookIds - id
                                 }
                                 if (useConversationInjections) {
-                                    onUpdateConversation(conversation.copy(lorebookIds = newIds))
+                                    onUpdateConversation(ConversationMetadataMutation.Lorebook(id, checked))
                                 } else {
                                     onUpdate(assistant.copy(lorebookIds = newIds))
                                 }

@@ -512,17 +512,15 @@ class ChatVM(
         }
     }
 
-    fun saveConversationAsync() {
-        viewModelScope.launch {
-            chatService.saveConversation(_conversationId, conversation.value)
-        }
+    fun mutateMetadata(mutation: me.rerere.rikkahub.data.repository.ConversationMetadataMutation) {
+        viewModelScope.launch { chatService.mutateConversationMetadata(_conversationId, mutation) }
     }
 
-    fun updateTitle(title: String) {
-        viewModelScope.launch {
-            val updatedConversation = conversation.value.copy(title = title)
-            chatService.saveConversation(_conversationId, updatedConversation)
-        }
+    fun updateTitle(title: String) =
+        mutateMetadata(me.rerere.rikkahub.data.repository.ConversationMetadataMutation.Title(title))
+
+    fun selectMessageVersion(nodeId: Uuid, messageId: Uuid) {
+        viewModelScope.launch { reportSubmitResult(chatService.selectMessageVersion(_conversationId, nodeId, messageId)) }
     }
 
     suspend fun deleteConversation(conversation: Conversation): ConversationDeletionResult =
@@ -574,12 +572,6 @@ class ChatVM(
 
     fun clearTranslationField(messageId: Uuid) {
         chatService.clearTranslationField(_conversationId, messageId)
-    }
-
-    fun updateConversation(newConversation: Conversation) {
-        chatService.updateConversationState(_conversationId) {
-            newConversation
-        }
     }
 
     fun toggleMessageFavorite(node: MessageNode) {

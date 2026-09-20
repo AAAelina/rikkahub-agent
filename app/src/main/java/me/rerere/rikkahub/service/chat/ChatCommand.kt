@@ -184,3 +184,12 @@ sealed interface ToolDecision {
     data class Denied(val reason: String) : ToolDecision
     data class Answered(val answer: String) : ToolDecision
 }
+
+/** Identity-only UI graph intent, serialized with generation by ConversationRuntime. */
+@Serializable
+data class MutateMessageCommand(
+    val nodeId: Uuid,
+    val messageId: Uuid,
+    val replacementParts: List<UIMessagePart>? = null,
+    val newMessageId: Uuid = Uuid.random(),
+) : NormalCommand

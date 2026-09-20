@@ -74,6 +74,7 @@ import me.rerere.rikkahub.data.datastore.findProvider
 import me.rerere.rikkahub.data.datastore.getChatModelForAssistant
 import me.rerere.rikkahub.data.db.entity.WorkspaceEntity
 import me.rerere.rikkahub.data.model.Assistant
+import me.rerere.rikkahub.data.repository.ConversationMetadataMutation
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.WorkspaceRepository
 import me.rerere.rikkahub.ui.components.ui.ExtensionSelector
@@ -96,7 +97,7 @@ internal fun FilesPicker(
     mcpManager: McpManager,
     onCompressContext: (additionalPrompt: String, targetTokens: Int, keepRecentMessages: Int) -> Job,
     onUpdateAssistant: (Assistant) -> Unit,
-    onUpdateConversation: (Conversation) -> Unit,
+    onUpdateConversation: (ConversationMetadataMutation) -> Unit,
     showInjectionSheet: Boolean,
     onShowInjectionSheetChange: (Boolean) -> Unit,
     showCompressDialog: Boolean,
@@ -271,7 +272,7 @@ internal fun FilesPicker(
                     workspaceId = boundWorkspace.id,
                     currentCwd = conversation.workspaceCwd,
                     onSelectCwd = { newCwd ->
-                        onUpdateConversation(conversation.copy(workspaceCwd = newCwd))
+                        onUpdateConversation(ConversationMetadataMutation.Workspace(newCwd))
                     },
                     onDismiss = { showCwdSheet = false },
                 )
@@ -313,7 +314,7 @@ private fun WorkspacePickerListItem(
     conversation: Conversation,
     workspaces: List<WorkspaceEntity>,
     onUpdateAssistant: (Assistant) -> Unit,
-    onUpdateConversation: (Conversation) -> Unit,
+    onUpdateConversation: (ConversationMetadataMutation) -> Unit,
     onNavigateToDetail: (String) -> Unit,
     onNavigateToTerminal: (String) -> Unit,
     onNavigateToManage: () -> Unit,
@@ -379,7 +380,7 @@ private fun WorkspacePickerListItem(
                 if (newId != assistant.workspaceId) {
                     onUpdateAssistant(assistant.copy(workspaceId = newId))
                     if (conversation.workspaceCwd != null) {
-                        onUpdateConversation(conversation.copy(workspaceCwd = null))
+                        onUpdateConversation(ConversationMetadataMutation.Workspace(null))
                     }
                 }
                 showSheet = false
@@ -399,7 +400,7 @@ private fun InjectionQuickConfigSheet(
     assistant: Assistant,
     settings: Settings,
     onUpdateAssistant: (Assistant) -> Unit,
-    onUpdateConversation: (Conversation) -> Unit,
+    onUpdateConversation: (ConversationMetadataMutation) -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberBottomSheetState(initialValue = SheetValue.Hidden, enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded))

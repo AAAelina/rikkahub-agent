@@ -54,7 +54,10 @@ class ConversationRepository(
     private val memoryRepository: MemoryRepository,
     private val sourceAuthorityWriter: ConversationSourceAuthorityWriter,
     private val transientFinalizationAuthority: TransientConversationFinalizationAuthorityCoordinator,
+    appScope: me.rerere.rikkahub.AppScope,
 ) {
+    private val searchProjection = ConversationPostCommitProjection(appScope)
+
     companion object {
         private const val TAG = "ConversationRepository"
         private const val PAGE_SIZE = 20
@@ -309,6 +312,7 @@ class ConversationRepository(
             persistConversationInCurrentTransaction(
                 conversation = conversation,
                 insert = false,
+                preserveMetadata = false,
                 sourceInvalidationMode = sourceInvalidationMode,
                 sourceInvalidationNowMs = sourceInvalidationNowMs,
             )
@@ -339,10 +343,19 @@ class ConversationRepository(
         sourceInvalidationMode: ConversationSourceInvalidationMode =
             ConversationSourceInvalidationMode.APPLY,
         sourceInvalidationNowMs: Long = System.currentTimeMillis(),
+        preserveMetadata: Boolean = true,
     ) {
         check(database.inTransaction()) { "conversation_transaction_required" }
-        val entity = conversationToConversationEntity(conversation)
-        val shouldInsert = insert ?: !conversationDAO.existsById(conversation.id.toString())
+        val stored = conversationDAO.getConversationById(conversation.id.toString())
+        if (preserveMetadata && stored != null) {
+            check(stored.assistantId == conversation.assistantId.toString()) { "Runtime conversation owner changed" }
+        }
+        val effective = if (preserveMetadata && stored != null) {
+            conversationEntityToConversation(stored, emptyList()).withRuntimeGraph(conversation)
+        } else conversation
+        val entity = conversationToConversationEntity(effective)
+        val shouldInsert = insert ?: false
+        check(shouldInsert || stored != null) { "Conversation missing in graph transaction" }
         if (shouldInsert) {
             conversationDAO.insert(entity)
         } else {
@@ -352,10 +365,10 @@ class ConversationRepository(
                     val previousSources = loadPersistedSelectedSourceVersionsInCurrentTransaction(
                         conversation.id.toString(),
                     )
-                    val nextSources = conversation.selectedMemorySourceVersions()
+                    val nextSources = effective.selectedMemorySourceVersions()
                     val plan = planConversationSourceInvalidation(
                         previousAssistantScopeId = storedEntity.assistantId,
-                        nextAssistantScopeId = conversation.assistantId.toString(),
+                        nextAssistantScopeId = effective.assistantId.toString(),
                         previousSelectedMessageIds = previousSources.messageIds(),
                         nextSelectedMessageIds = nextSources.messageIds(),
                         previousSelectedSourceVersions = previousSources,
@@ -486,24 +499,61 @@ class ConversationRepository(
         // The authority transaction is already committed. A derived FTS failure or cancellation
         // must not make the caller restore the old graph after source tombstones and the exact
         // ALR source-authority/outbox transitions became durable together.
-        try {
-            messageFtsManager.indexConversation(conversation)
-        } catch (error: Exception) {
-            Log.w(TAG, "Final regeneration search projection refresh failed", error)
-        }
+        refreshSearchProjection(conversation)
         return ConversationUpdateResult.Updated(conversation.id)
     }
 
     /** Refreshes the non-authoritative FTS projection after a critical transaction commits. */
-    suspend fun refreshSearchProjection(conversation: Conversation) {
-        runConversationPostCommitProjection(
-            project = { messageFtsManager.indexConversation(conversation) },
-            onFailure = { Log.w(TAG, "Committed conversation search projection refresh failed", it) },
+    fun refreshSearchProjection(conversation: Conversation) {
+        enqueueSearchProjection(conversation.id)
+    }
+
+    private fun enqueueSearchProjection(id: Uuid) {
+        searchProjection.enqueue(
+            project = {
+                // Re-read at execution time: queued old snapshots cannot roll back the index.
+                val current = database.withTransaction { getConversationById(id) }
+                if (current == null) messageFtsManager.deleteConversation(id.toString())
+                else messageFtsManager.indexConversation(current)
+            },
+            onFailure = { Log.w(TAG, "Committed conversation search projection failed", it) },
         )
     }
 
-    suspend fun updateConversationTitle(conversationId: Uuid, title: String) {
-        conversationDAO.updateTitle(conversationId.toString(), title)
+    suspend fun updateConversationTitle(conversationId: Uuid, title: String): Boolean =
+        mutateMetadata(conversationId, ConversationMetadataMutation.Title(title)) != null
+
+    /** Existence and field update share the Room write transaction; missing is never creation. */
+    suspend fun mutateMetadata(id: Uuid, mutation: ConversationMetadataMutation): Conversation? {
+        val updated = database.withTransaction {
+            val current = getConversationById(id) ?: return@withTransaction null
+            mutation.apply(current).also {
+                conversationDAO.update(conversationToConversationEntity(it))
+            }
+        }
+        if (updated != null) enqueueSearchProjection(id)
+        return updated
+    }
+
+    /** Runtime owns the graph, never user/admin metadata. Explicit full update stays separate. */
+    suspend fun updateRuntimeConversation(
+        incoming: Conversation,
+        sourceInvalidationMode: ConversationSourceInvalidationMode,
+        sourceInvalidationNowMs: Long,
+    ): Conversation? {
+        var commits: List<ConversationSourceAuthorityCommit> = emptyList()
+        val updated = database.withTransaction {
+            val stored = getConversationById(incoming.id) ?: return@withTransaction null
+            val merged = stored.withRuntimeGraph(incoming)
+            persistConversationInCurrentTransaction(merged, false, sourceInvalidationMode, sourceInvalidationNowMs)
+            if (sourceInvalidationMode != ConversationSourceInvalidationMode.SKIP_TRANSIENT_WRITE) {
+                commits = reconcileOrdinarySourceInCurrentTransaction(merged, sourceInvalidationNowMs)
+            }
+            merged
+        }
+        commits.forEach(sourceAuthorityWriter::dispatchPostCommit)
+        if (updated != null) enqueueSearchProjection(incoming.id)
+        return updated
     }
 
     suspend fun updateConversationSuggestions(conversationId: Uuid, suggestions: List<String>) {
@@ -549,10 +599,7 @@ class ConversationRepository(
         if (!deleted) return ConversationDeletionResult.Missing(fullConversation.id)
         authorityCommits.forEach(sourceAuthorityWriter::dispatchPostCommit)
         // FTS is a derived projection, so mutate it only after the authoritative transaction.
-        runConversationPostCommitProjection(
-            project = { messageFtsManager.deleteConversation(fullConversation.id.toString()) },
-            onFailure = { Log.w(TAG, "Deleted conversation search projection cleanup failed", it) },
-        )
+        enqueueSearchProjection(fullConversation.id)
         // A committed row deletion is not proof of exclusive file ownership. Owner branches,
         // imports and tool results may share these URLs. Retain files until a global ownership
         // proof can authorize physical cleanup; orphan retention is preferable to data loss.
@@ -610,45 +657,11 @@ class ConversationRepository(
         return ConversationBatchDeletionResult(deleted, retained)
     }
 
-    fun conversationToConversationEntity(conversation: Conversation): ConversationEntity {
-        require(conversation.messageNodes.none { it.messages.any { message -> message.hasBase64Part() } })
-        return ConversationEntity(
-            id = conversation.id.toString(),
-            title = conversation.title,
-            nodes = "[]",  // nodes 现在存储在单独的表中
-            createAt = conversation.createAt.toEpochMilli(),
-            updateAt = conversation.updateAt.toEpochMilli(),
-            assistantId = conversation.assistantId.toString(),
-            chatSuggestions = JsonInstant.encodeToString(conversation.chatSuggestions),
-            isPinned = conversation.isPinned,
-            customSystemPrompt = conversation.customSystemPrompt ?: "",
-            modeInjectionIds = JsonInstant.encodeToString(conversation.modeInjectionIds),
-            lorebookIds = JsonInstant.encodeToString(conversation.lorebookIds),
-            workspaceCwd = conversation.workspaceCwd ?: "",
-            folderId = conversation.folderId,
-        )
-    }
+    fun conversationToConversationEntity(conversation: Conversation): ConversationEntity =
+        me.rerere.rikkahub.data.repository.conversationToConversationEntity(conversation)
 
-    fun conversationEntityToConversation(
-        conversationEntity: ConversationEntity,
-        messageNodes: List<MessageNode>
-    ): Conversation {
-        return Conversation(
-            id = Uuid.parse(conversationEntity.id),
-            title = conversationEntity.title,
-            messageNodes = messageNodes.filter { it.messages.isNotEmpty() },
-            createAt = Instant.ofEpochMilli(conversationEntity.createAt),
-            updateAt = Instant.ofEpochMilli(conversationEntity.updateAt),
-            assistantId = Uuid.parse(conversationEntity.assistantId),
-            chatSuggestions = JsonInstant.decodeFromString(conversationEntity.chatSuggestions),
-            isPinned = conversationEntity.isPinned,
-            customSystemPrompt = conversationEntity.customSystemPrompt.ifEmpty { null },
-            modeInjectionIds = JsonInstant.decodeFromString(conversationEntity.modeInjectionIds),
-            lorebookIds = JsonInstant.decodeFromString(conversationEntity.lorebookIds),
-            workspaceCwd = conversationEntity.workspaceCwd.ifEmpty { null },
-            folderId = conversationEntity.folderId,
-        )
-    }
+    fun conversationEntityToConversation(entity: ConversationEntity, nodes: List<MessageNode>): Conversation =
+        me.rerere.rikkahub.data.repository.conversationEntityToConversation(entity, nodes)
 
     fun getPinnedConversations(): Flow<List<Conversation>> {
         return conversationDAO

@@ -196,7 +196,7 @@ fun Route.conversationRoutes(
             val conversation = conversationRepo.getConversationById(uuid)
                 ?: throw NotFoundException("Conversation not found")
 
-            chatService.saveConversation(uuid, conversation.copy(isPinned = !conversation.isPinned))
+            conversationRepo.togglePinStatus(uuid)
             call.respond(HttpStatusCode.OK, mapOf("status" to "updated"))
         }
 
@@ -223,7 +223,7 @@ fun Route.conversationRoutes(
             val conversation = conversationRepo.getConversationById(uuid)
                 ?: throw NotFoundException("Conversation not found")
 
-            chatService.saveConversation(uuid, conversation.copy(title = title))
+            chatService.mutateConversationMetadata(uuid, me.rerere.rikkahub.data.repository.ConversationMetadataMutation.Title(title))
             call.respond(HttpStatusCode.OK, mapOf("status" to "updated"))
         }
 
@@ -252,7 +252,7 @@ fun Route.conversationRoutes(
                 modeInjectionIds = modeInjectionIds,
                 lorebookIds = lorebookIds,
             )
-            chatService.saveConversation(uuid, updatedConversation)
+            chatService.mutateConversationMetadata(uuid, me.rerere.rikkahub.data.repository.ConversationMetadataMutation.Injections(modeInjectionIds, lorebookIds))
 
             val isGenerating = chatService.getGenerationJobStateFlow(uuid).first() != null
             call.respond(HttpStatusCode.OK, updatedConversation.toDto(isGenerating))
@@ -275,7 +275,9 @@ fun Route.conversationRoutes(
             // Same rationale as ChatVM.moveConversationToAssistant — drop ChatScope grants
             // because they were authorised under the previous assistant's behaviour.
             me.rerere.rikkahub.data.ai.tools.ToolApprovalAllowList.clearChat(uuid)
-            chatService.saveConversation(uuid, conversation.copy(assistantId = targetAssistantId))
+            val moved = conversation.copy(assistantId = targetAssistantId)
+            check(conversationRepo.updateConversation(moved) is me.rerere.rikkahub.data.repository.ConversationUpdateResult.Updated)
+            chatService.updateConversationState(uuid) { it.copy(assistantId = targetAssistantId) }
             call.respond(HttpStatusCode.OK, mapOf("status" to "updated"))
         }
 
@@ -578,10 +580,6 @@ private suspend fun applyInitialConversationInjections(
         lorebookIds = lorebookIds ?: conversation.lorebookIds.map { it.toString() },
     )
 
-    chatService.updateConversationState(conversationId) {
-        it.copy(
-            modeInjectionIds = requestedModeInjectionIds,
-            lorebookIds = requestedLorebookIds,
-        )
-    }
+    chatService.mutateConversationMetadata(conversationId,
+        me.rerere.rikkahub.data.repository.ConversationMetadataMutation.Injections(requestedModeInjectionIds, requestedLorebookIds))
 }

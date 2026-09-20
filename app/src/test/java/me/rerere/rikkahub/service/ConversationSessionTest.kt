@@ -16,6 +16,19 @@ import kotlin.uuid.Uuid
 
 class ConversationSessionTest {
     @Test
+    fun `partial mutation of placeholder does not masquerade as durable hydration`() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val id = Uuid.random()
+        val session = ConversationSession(id, Conversation.ofId(id), scope, {})
+        session.updateState { it.copy(title = "placeholder") }
+        assertFalse(session.isHydrated)
+        val stored = Conversation.ofId(id).copy(title = "durable")
+        assertTrue(session.hydrateIfNeeded(stored))
+        assertEquals("durable", session.state.value.title)
+        scope.coroutineContext[Job]?.cancel()
+    }
+
+    @Test
     fun `late hydration cannot overwrite live conversation state`() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val conversationId = Uuid.random()

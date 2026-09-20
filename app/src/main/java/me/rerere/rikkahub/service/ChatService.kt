@@ -37,6 +37,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.JsonObject
@@ -107,6 +108,7 @@ import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.replaceRegexes
 import me.rerere.rikkahub.data.model.toMessageNode
+import me.rerere.rikkahub.data.repository.withRuntimeGraph
 import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.repository.ConversationSourceInvalidationMode
 import me.rerere.rikkahub.data.repository.selectedMemorySourceVersions
@@ -1249,6 +1251,13 @@ class ChatService(
                 return rejectedTrackedCommand(reason)
         }
         val resolvedCommandId = commandId ?: Uuid.random()
+        if (command is SendMessageCommand && !conversationRepo.existsConversationById(conversationId)) {
+            val draft = sessions[conversationId]?.takeIf { it.isHydrated }?.state?.value
+            if (draft?.newConversation == true) {
+                conversationRepo.insertConversation(draft.copy(newConversation = false))
+                updateConversation(conversationId, draft.copy(newConversation = false))
+            }
+        }
         val persistedAdmissionConversation = conversationRepo.getConversationById(conversationId)
             ?: return rejectedTrackedCommand("Conversation not found")
         if (origin == CommandOrigin.SYSTEM_ASSISTANT && command !is StopCommand) {
@@ -1863,6 +1872,21 @@ class ChatService(
                 }
             }
 
+            is me.rerere.rikkahub.service.chat.MutateMessageCommand -> {
+                val current = conversationRepo.getConversationById(envelope.conversationId)
+                    ?: return RunOutcome.Conflict("Conversation missing")
+                val updated = me.rerere.rikkahub.data.repository.applyMessageMutation(current, command)
+                    ?: return RunOutcome.Conflict("Message target missing")
+                val authority = control.runtimeCommandAuthority()
+                    ?: return RunOutcome.Rejected("Message mutation requires runtime authority")
+                authority.finish(updated,
+                    me.rerere.rikkahub.service.chat.DurableCommandState.COMPLETED,
+                    me.rerere.rikkahub.service.chat.RuntimeAuthorityTerminalKind.CONTROL_ONLY,
+                    resultAssistantMessageId = null)
+                conversationRepo.refreshSearchProjection(updated)
+                updateConversation(envelope.conversationId, updated)
+                RunOutcome.Completed()
+            }
             is NormalCommand -> RunOutcome.Rejected("Unsupported normal command: ${command::class.simpleName}")
             is StopCommand -> RunOutcome.Stopped(me.rerere.rikkahub.service.chat.InterruptCleanupResult.Completed)
             is me.rerere.rikkahub.service.chat.SteerCommand -> {
@@ -4494,13 +4518,8 @@ class ChatService(
             )
 
             val generatedTitle = result.choices[0].message?.toText()?.trim().orEmpty()
-            val updated = mergeConversationState(conversationId) { current ->
-                if (!force && current.title.isNotBlank()) current
-                else current.withGeneratedTitle(generatedTitle)
-            }
-            if (updated.title == generatedTitle) {
-                conversationRepo.updateConversationTitle(conversationId, generatedTitle)
-            }
+            mutateConversationMetadata(conversationId,
+                me.rerere.rikkahub.data.repository.ConversationMetadataMutation.GeneratedTitle(generatedTitle, force))
         }.onFailure {
             if (it is CancellationException) throw it
             // Title generation is auxiliary �?a failure here doesn't block the chat
@@ -4779,7 +4798,8 @@ class ChatService(
     private fun updateConversation(conversationId: Uuid, conversation: Conversation) {
         if (conversation.id != conversationId) return
         val session = getOrCreateSession(conversationId)
-        session.replaceState(conversation)
+        if (session.isHydrated) session.updateState { it.withRuntimeGraph(conversation) }
+        else session.replaceState(conversation)
     }
 
     fun updateConversationState(conversationId: Uuid, update: (Conversation) -> Conversation) {
@@ -4828,18 +4848,42 @@ class ChatService(
             }
         }
 
-        val updatedConversation = conversation.copy()
-        updateConversation(conversationId, updatedConversation)
-
-        if (!exists) {
-            conversationRepo.insertConversation(updatedConversation)
+        require(conversationId == conversation.id)
+        val committed = if (!exists) {
+            // Only an explicitly initialized draft may create. A missing durable row is not a draft.
+            check(conversation.newConversation) { "Conversation disappeared before runtime save" }
+            conversation.copy(newConversation = false).also { conversationRepo.insertConversation(it) }
         } else {
-            conversationRepo.updateConversation(
-                conversation = updatedConversation,
-                sourceInvalidationMode = sourceInvalidationMode,
-                sourceInvalidationNowMs = sourceInvalidationNowMs,
-            )
+            conversationRepo.updateRuntimeConversation(conversation, sourceInvalidationMode, sourceInvalidationNowMs)
+                ?: error("Conversation disappeared before runtime save")
         }
+        updateConversation(conversationId, committed)
+    }
+
+    suspend fun mutateConversationMetadata(
+        conversationId: Uuid,
+        mutation: me.rerere.rikkahub.data.repository.ConversationMetadataMutation,
+    ) {
+        val session = getOrCreateSession(conversationId)
+        session.metadataMutationMutex.withLock {
+            ensureHydrated(conversationId)
+            val committed = conversationRepo.mutateMetadata(conversationId, mutation)
+            check(session.isHydrated) { "Conversation not initialized" }
+            if (committed != null || session.state.value.newConversation) {
+                session.updateState { mutation.apply(it) }
+            } else {
+                error("Conversation not found")
+            }
+        }
+    }
+
+    suspend fun selectMessageVersion(conversationId: Uuid, nodeId: Uuid, messageId: Uuid): SubmitResult {
+        val tracked = submitCommandTracked(conversationId,
+            me.rerere.rikkahub.service.chat.MutateMessageCommand(nodeId, messageId),
+            CommandOrigin.APP_UI, null, null, emptyList())
+        val outcome = tracked.outcome.await()
+        return if (outcome == CommandOutcome.Completed) tracked.submission
+            else SubmitResult.Rejected("Branch selection not applied: $outcome")
     }
 
     // ---- 翻译消息 ----
@@ -4915,31 +4959,18 @@ class ChatService(
     ) {
         if (parts.isEmptyInputMessage()) return
 
-        val currentConversation = getConversationFlow(conversationId).value
+        val current = conversationRepo.getConversationById(conversationId) ?: return
+        val node = current.getMessageNodeByMessageId(messageId) ?: return
         val settings = settingsStore.settingsFlow.first()
-        val assistant = settings.getAssistantById(currentConversation.assistantId)
-            ?: settings.getCurrentAssistant()
-        val processedParts = preprocessUserInputParts(parts, assistant)
-        var edited = false
-
-        val updatedNodes = currentConversation.messageNodes.map { node ->
-            if (!node.messages.any { it.id == messageId }) {
-                return@map node
-            }
-            edited = true
-
-            node.copy(
-                messages = node.messages + UIMessage(
-                    role = node.role,
-                    parts = processedParts,
-                ),
-                selectIndex = node.messages.size
-            )
+        val assistant = settings.getAssistantById(current.assistantId) ?: settings.getCurrentAssistant()
+        val processed = preprocessUserInputParts(parts, assistant)
+        val tracked = submitCommandTracked(conversationId,
+            me.rerere.rikkahub.service.chat.MutateMessageCommand(node.id, messageId, processed),
+            CommandOrigin.APP_UI, null, null, emptyList())
+        when (val result = tracked.outcome.await()) {
+            CommandOutcome.Completed -> Unit
+            else -> error("Message edit not applied: $result")
         }
-
-        if (!edited) return
-
-        saveConversation(conversationId, currentConversation.copy(messageNodes = updatedNodes))
     }
 
     suspend fun forkConversationAtMessage(
@@ -4979,7 +5010,8 @@ class ChatService(
             lorebookIds = currentConversation.lorebookIds,
         )
 
-        saveConversation(forkConversation.id, forkConversation)
+        conversationRepo.insertConversation(forkConversation)
+        updateConversation(forkConversation.id, forkConversation)
         return forkConversation
     }
 
@@ -4988,27 +5020,15 @@ class ChatService(
         nodeId: Uuid,
         selectIndex: Int
     ) {
-        val currentConversation = getConversationFlow(conversationId).value
-        val targetNode = currentConversation.messageNodes.firstOrNull { it.id == nodeId }
+        val current = conversationRepo.getConversationById(conversationId)
+            ?: throw NotFoundException("Conversation not found")
+        val node = current.messageNodes.find { it.id == nodeId }
             ?: throw NotFoundException("Message node not found")
-
-        if (selectIndex !in targetNode.messages.indices) {
-            throw BadRequestException("Invalid selectIndex")
-        }
-
-        if (targetNode.selectIndex == selectIndex) {
-            return
-        }
-
-        val updatedNodes = currentConversation.messageNodes.map { node ->
-            if (node.id == nodeId) {
-                node.copy(selectIndex = selectIndex)
-            } else {
-                node
-            }
-        }
-
-        saveConversation(conversationId, currentConversation.copy(messageNodes = updatedNodes))
+        val target = node.messages.getOrNull(selectIndex) ?: throw BadRequestException("Invalid selectIndex")
+        val tracked = submitCommandTracked(conversationId,
+            me.rerere.rikkahub.service.chat.MutateMessageCommand(nodeId, target.id),
+            CommandOrigin.WEB_API, null, null, emptyList())
+        check(tracked.outcome.await() == CommandOutcome.Completed) { "Branch selection not applied" }
     }
 
     suspend fun deleteMessage(
@@ -5102,6 +5122,23 @@ class ChatService(
 
         updateConversation(conversationId, currentConversation.copy(messageNodes = updatedNodes))
     }
+
+    /** Stop acknowledgement is not a join. Retain ephemeral state until both authorities settle. */
+    internal suspend fun stopAndAwaitQuiescence(conversationId: Uuid, commandId: Uuid?, graceMs: Long): Boolean =
+        kotlinx.coroutines.withTimeoutOrNull(graceMs) {
+            val runtime = runtimes[conversationId] ?: return@withTimeoutOrNull true
+            val job = sessions[conversationId]?.getJob()
+            val stop = CommandEnvelope(
+                conversationId = conversationId, command = StopCommand(), origin = CommandOrigin.INTERNAL,
+                sequence = commandSequences.getOrPut(conversationId) { AtomicLong() }.incrementAndGet(),
+            )
+            runtime.replaceEmergencyEnvelope(stop)
+            if (commandId != null) cancelQueuedCommand(conversationId, commandId)
+            if (stop.result.await() != CommandOutcome.Completed) return@withTimeoutOrNull false
+            job?.join()
+            while (runtime.hasRetainedWork) kotlinx.coroutines.delay(10)
+            true
+        } ?: false
 
     // 停止当前会话生成任务（不清理会话缓存�?
     suspend fun stopGeneration(conversationId: Uuid): SubmitResult =

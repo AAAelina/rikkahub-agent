@@ -37,6 +37,7 @@ object CommandCodec {
     }.getOrDefault(CommandOrigin.INTERNAL)
 
     fun encode(command: ChatCommand): Pair<String, String> = when (command) {
+        is MutateMessageCommand -> "mutate_message" to json.encodeToString(MutateMessageCommand.serializer(), command)
         is PetDialogueCommand -> error("pet_dialogue_command_is_memory_only")
         is SendMessageCommand -> "send_message" to buildJsonObject {
             put("content", json.encodeToString(RawUserContent.serializer(), command.content))
@@ -177,6 +178,7 @@ object CommandCodec {
                     ),
                 )
             )
+            "mutate_message" -> json.decodeFromString(MutateMessageCommand.serializer(), payload)
             "stop" -> StopCommand(root["pauseQueue"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: true)
             "tool_approval" -> {
                 val decision = root["decision"]?.jsonObject ?: return@runCatching null

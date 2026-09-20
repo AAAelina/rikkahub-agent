@@ -739,18 +739,8 @@ private fun ChatPageContent(
                         vm.deleteMessage(it)
                     }
                 },
-                onUpdateMessage = { newNode ->
-                    vm.updateConversation(
-                        conversation.copy(
-                            messageNodes = conversation.messageNodes.map { node ->
-                                if (node.id == newNode.id) {
-                                    newNode
-                                } else {
-                                    node
-                                }
-                            }
-                        ))
-                    vm.saveConversationAsync()
+                onUpdateMessage = { nodeId, messageId ->
+                    vm.selectMessageVersion(nodeId, messageId)
                 },
                 onHelpfulFeedback = if (rewardFeedbackAvailable) {
                     { message ->
@@ -793,8 +783,7 @@ private fun ChatPageContent(
                     vm.toggleMessageFavorite(node)
                 },
                 onConversationSystemPromptChange = { newPrompt ->
-                    vm.updateConversation(conversation.copy(customSystemPrompt = newPrompt))
-                    vm.saveConversationAsync()
+                    vm.mutateMetadata(me.rerere.rikkahub.data.repository.ConversationMetadataMutation.SystemPrompt(newPrompt))
                 },
                 onAddSelectionToMemory = { selectedNodeIds ->
                     scope.launch {
@@ -1100,8 +1089,7 @@ private fun ChatFilesPickerSheet(
                 )
             },
             onUpdateConversation = {
-                vm.updateConversation(it)
-                vm.saveConversationAsync()
+                vm.mutateMetadata(it)
             },
             showInjectionSheet = showInjectionSheet,
             onShowInjectionSheetChange = { showInjectionSheet = it },

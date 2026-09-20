@@ -69,7 +69,7 @@ class TransientConversationFinalizationProductionContractTest {
         assertTrue(dataSource.contains("transactions = get()"))
         assertTrue(dataSource.contains("sources = get()"))
         assertTrue(repositoryModule.contains(
-            "ConversationRepository(get(), get(), get(), get(), get(), get(), get(), get(), get(), get())",
+            "ConversationRepository(get(), get(), get(), get(), get(), get(), get(), get(), get(), get(), get())",
         ))
     }
 

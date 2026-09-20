@@ -141,7 +141,7 @@ fun ChatList(
     onEdit: (UIMessage) -> Unit = {},
     onForkMessage: (UIMessage) -> Unit = {},
     onDelete: (UIMessage) -> Unit = {},
-    onUpdateMessage: (MessageNode) -> Unit = {},
+    onUpdateMessage: (kotlin.uuid.Uuid, kotlin.uuid.Uuid) -> Unit = { _, _ -> },
     onHelpfulFeedback: ((UIMessage) -> Unit)? = null,
     onNotHelpfulFeedback: ((UIMessage) -> Unit)? = null,
     onClickSuggestion: (String) -> Unit = {},
@@ -219,7 +219,7 @@ private fun ChatListNormal(
     onEdit: (UIMessage) -> Unit,
     onForkMessage: (UIMessage) -> Unit,
     onDelete: (UIMessage) -> Unit,
-    onUpdateMessage: (MessageNode) -> Unit,
+    onUpdateMessage: (kotlin.uuid.Uuid, kotlin.uuid.Uuid) -> Unit,
     onHelpfulFeedback: ((UIMessage) -> Unit)?,
     onNotHelpfulFeedback: ((UIMessage) -> Unit)?,
     onClickSuggestion: (String) -> Unit,
@@ -427,8 +427,8 @@ private fun ChatListNormal(
                                 selectedItems.addAll(conversation.messageNodes.map { it.id }
                                     .subList(0, conversation.messageNodes.indexOf(node) + 1))
                             },
-                            onUpdate = {
-                                onUpdateMessage(it)
+                            onUpdate = { nodeId, messageId ->
+                                onUpdateMessage(nodeId, messageId)
                             },
                             onHelpfulFeedback = onHelpfulFeedback,
                             onNotHelpfulFeedback = onNotHelpfulFeedback,

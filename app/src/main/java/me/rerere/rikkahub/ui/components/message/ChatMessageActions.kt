@@ -71,7 +71,7 @@ import java.util.Locale
 fun ColumnScope.ChatMessageActionButtons(
     message: UIMessage,
     node: MessageNode,
-    onUpdate: (MessageNode) -> Unit,
+    onUpdate: (kotlin.uuid.Uuid, kotlin.uuid.Uuid) -> Unit,
     onRegenerate: () -> Unit,
     onOpenActionSheet: () -> Unit,
     onHelpfulFeedback: ((UIMessage) -> Unit)? = null,

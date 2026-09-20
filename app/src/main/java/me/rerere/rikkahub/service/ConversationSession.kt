@@ -26,6 +26,7 @@ class ConversationSession(
 ) {
     // 会话状态
     val state = MutableStateFlow(initial)
+    internal val metadataMutationMutex = kotlinx.coroutines.sync.Mutex()
     private val stateLock = Any()
     @Volatile
     private var hydrated = false
@@ -48,7 +49,6 @@ class ConversationSession(
 
     fun updateState(transform: (Conversation) -> Conversation): Conversation = synchronized(stateLock) {
         state.value = transform(state.value)
-        hydrated = true
         state.value
     }
 

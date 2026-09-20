@@ -33,6 +33,41 @@ import kotlin.uuid.Uuid
 
 class ConversationRuntimeTest {
     @Test
+    fun `identity mutation waits behind generation and receives its own outcome`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val conversationId = Uuid.random()
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val editStarted = CompletableDeferred<Unit>()
+        val runtime = ConversationRuntime(
+            appScope = scope, conversationId = conversationId,
+            executor = RuntimeCommandExecutor { envelope, _ ->
+                if (envelope.command is SendMessageCommand) {
+                    started.complete(Unit); release.await()
+                    RunOutcome.Completed()
+                } else {
+                    editStarted.complete(Unit)
+                    RunOutcome.Conflict("Message target disappeared")
+                }
+            },
+        )
+        try {
+            val send = CommandEnvelope(conversationId = conversationId, command = messageCommand("send"),
+                origin = CommandOrigin.APP_UI, sequence = 1L)
+            runtime.enqueueEnvelope(send)
+            withTimeout(5000) { started.await() }
+            val edit = CommandEnvelope(conversationId = conversationId,
+                command = MutateMessageCommand(Uuid.random(), Uuid.random()), origin = CommandOrigin.APP_UI, sequence = 2L)
+            runtime.enqueueEnvelope(edit)
+            assertFalse(editStarted.isCompleted)
+            assertFalse(edit.result.isCompleted)
+            release.complete(Unit)
+            assertEquals(CommandOutcome.Completed, withTimeout(5000) { send.result.await() })
+            assertEquals(CommandOutcome.Conflict("Message target disappeared"), withTimeout(5000) { edit.result.await() })
+        } finally { runtime.close(); scope.cancel() }
+    }
+
+    @Test
     fun `resume queue codec preserves start immediately policy`() {
         val command = ResumeQueueCommand(startNextImmediately = false)
         val encoded = CommandCodec.encode(command)
