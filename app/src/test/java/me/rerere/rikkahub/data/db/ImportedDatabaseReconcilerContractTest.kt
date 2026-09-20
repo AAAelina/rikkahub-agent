@@ -8,14 +8,38 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
 class ImportedDatabaseReconcilerContractTest {
+    @Test
+    fun `frozen v49 migrates while exact v50 is current`() {
+        assertEquals("MIGRATE_FINAL_V49", ImportedDatabaseReconciler.stagedReconcilePlanOrThrow(
+            49, "967f2a908998f5bac733c1ae71bee5bb",
+        ).name)
+        assertEquals(ImportedDatabaseReconciler.ReconcilePlan.FULL_COMPATIBILITY,
+            ImportedDatabaseReconciler.reconcilePlan(49, "967f2a908998f5bac733c1ae71bee5bb"))
+        assertEquals("ALREADY_CURRENT", ImportedDatabaseReconciler.stagedReconcilePlanOrThrow(
+            50, "73b32c82384f8b24fe576d123524249a",
+        ).name)
+    }
+
+    @Test
+    fun `staged v49 v50 reject unknown cross version and future identities`() {
+        listOf(49 to "unknown", 50 to "unknown",
+            49 to "73b32c82384f8b24fe576d123524249a",
+            50 to "967f2a908998f5bac733c1ae71bee5bb",
+            51 to "73b32c82384f8b24fe576d123524249a").forEach { (version, identity) ->
+            assertThrows(IllegalStateException::class.java) {
+                ImportedDatabaseReconciler.stagedReconcilePlanOrThrow(version, identity)
+            }
+        }
+    }
+
     @get:Rule
     val temporaryFolder = TemporaryFolder()
 
     @Test
-    fun `reconciler pins the exported v49 identity and exact v48 predecessor`() {
-        assertEquals(49, ImportedDatabaseReconciler.EXPECTED_VERSION)
+    fun `reconciler pins the exported v50 identity and exact v48 predecessor`() {
+        assertEquals(50, ImportedDatabaseReconciler.EXPECTED_VERSION)
         assertEquals(
-            "967f2a908998f5bac733c1ae71bee5bb",
+            "73b32c82384f8b24fe576d123524249a",
             ImportedDatabaseReconciler.EXPECTED_IDENTITY_HASH,
         )
         assertEquals(
@@ -71,7 +95,7 @@ class ImportedDatabaseReconcilerContractTest {
 
     @Test
     fun `unknown current schema is refused and never compatibility stamped`() {
-        listOf(46, 47, 48, 49).forEach { version ->
+        listOf(46, 47, 48, 49, 50).forEach { version ->
             listOf(null, "", "unknown", ImportedDatabaseReconciler.EXPECTED_IDENTITY_HASH)
                 .forEach { identity ->
                     val isExactCurrent = version == ImportedDatabaseReconciler.EXPECTED_VERSION &&
@@ -175,7 +199,7 @@ class ImportedDatabaseReconcilerContractTest {
     @Test
     fun `cold staged restore accepts only exact frozen v46 and v47 identities`() {
         assertEquals(
-            listOf(46 to 47, 47 to 48, 48 to 49),
+            listOf(46 to 47, 47 to 48, 48 to 49, 49 to 50),
             ImportedDatabaseReconciler.STAGED_COLD_RESTORE_MIGRATIONS.map {
                 it.startVersion to it.endVersion
             },
@@ -288,11 +312,11 @@ class ImportedDatabaseReconcilerContractTest {
     }
 
     @Test
-    fun `final v49 identity skips raw framework reconciliation`() {
+    fun `final v50 identity skips raw framework reconciliation`() {
         assertEquals(
             ImportedDatabaseReconciler.ReconcilePlan.SKIP,
             ImportedDatabaseReconciler.reconcilePlan(
-                version = 49,
+                version = 50,
                 identityHash = ImportedDatabaseReconciler.EXPECTED_IDENTITY_HASH,
             ),
         )

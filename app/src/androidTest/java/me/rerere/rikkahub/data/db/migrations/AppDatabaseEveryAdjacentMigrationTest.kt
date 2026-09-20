@@ -101,6 +101,7 @@ class AppDatabaseEveryAdjacentMigrationTest {
         46 to 47 -> arrayOf(MIGRATION_46_47)
         47 to 48 -> arrayOf(MIGRATION_47_48)
         48 to 49 -> arrayOf(MIGRATION_48_49)
+        49 to 50 -> arrayOf(MIGRATION_49_50)
             else -> emptyArray()
         }
 
@@ -162,7 +163,7 @@ class AppDatabaseEveryAdjacentMigrationTest {
     }
 
     private companion object {
-        const val CURRENT_APP_DATABASE_VERSION = 49
+        const val CURRENT_APP_DATABASE_VERSION = 50
         const val ADJACENT_FIXTURE_STREAM_ID = "10000000-0000-4000-8000-000000000001"
     }
 }

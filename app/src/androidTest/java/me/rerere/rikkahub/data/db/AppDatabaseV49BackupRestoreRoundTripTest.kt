@@ -62,7 +62,108 @@ class AppDatabaseV49BackupRestoreRoundTripTest {
     )
 
     @Test
-    fun exactSameVersionV49StagedImportPreservesWorkflowAndGrant() {
+    fun currentV50RejectsWrongForeignKeyActionsWithOtherwiseIntactSchema() {
+        listOf("RESTRICT" to "CASCADE", "CASCADE" to "RESTRICT").forEach { (before, after) ->
+            val name = stagedDatabaseName()
+            try {
+                helper.createDatabase(name, 50).use { db ->
+                    insertV49Fixture(db)
+                    val table = "dream_claim_experience_sources"
+                    val ddl = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '$table'").use {
+                        check(it.moveToFirst())
+                        it.getString(0)
+                    }
+                    val indices = db.query("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = '$table' AND sql IS NOT NULL").use {
+                        buildList { while (it.moveToNext()) add(it.getString(0)) }
+                    }
+                    db.execSQL("DROP TABLE $table")
+                    db.execSQL(ddl.replace("ON DELETE $before", "ON DELETE $after"))
+                    indices.forEach(db::execSQL)
+                }
+                org.junit.Assert.assertThrows(IllegalStateException::class.java) {
+                    ImportedDatabaseReconciler.reconcileStagedFileOrThrow(
+                        context().getDatabasePath(name).canonicalFile, STREAM_ID, 1L,
+                    )
+                }
+            } finally {
+                context().deleteDatabase(name)
+            }
+        }
+    }
+
+    @Test
+    fun currentV50RejectsMissingTableColumnIndexAndForeignKeyBeforeQuarantine() {
+        listOf(
+            "DROP TABLE dream_claim_experience_sources",
+            "ALTER TABLE dream_claims RENAME COLUMN subject_kind TO broken_subject_kind",
+            "DROP INDEX index_dream_experiences_pair_scope_id_experience_epoch",
+            "ALTER TABLE dream_claim_experience_sources RENAME TO broken_sources",
+        ).forEach { corruption ->
+            val name = stagedDatabaseName()
+            try {
+                helper.createDatabase(name, 50).use { db ->
+                    insertV49Fixture(db)
+                    db.execSQL(corruption)
+                    if (corruption.contains("broken_sources")) {
+                        db.execSQL("CREATE TABLE dream_claim_experience_sources AS SELECT * FROM broken_sources")
+                    }
+                }
+                val staged = context().getDatabasePath(name).canonicalFile
+                org.junit.Assert.assertThrows(IllegalStateException::class.java) {
+                    ImportedDatabaseReconciler.reconcileStagedFileOrThrow(staged, STREAM_ID, 1L)
+                }
+                SQLiteDatabase.openDatabase(staged.path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+                    db.rawQuery("SELECT stateVersion FROM workflows WHERE id = ?", arrayOf(WORKFLOW_ID)).use {
+                        assertTrue(it.moveToFirst())
+                        assertEquals(1L, it.getLong(0))
+                    }
+                }
+            } finally {
+                context().deleteDatabase(name)
+            }
+        }
+    }
+
+    @Test
+    fun exactSameVersionV50StagedImportPreservesWorkflowAndGrant() {
+        val name = stagedDatabaseName()
+        try {
+            helper.createDatabase(name, 50).use(::insertV49Fixture)
+            val staged = context().getDatabasePath(name).canonicalFile
+            ImportedDatabaseReconciler.reconcileStagedFileOrThrow(staged, STREAM_ID, 1L)
+            assertRestoredFixture(staged)
+        } finally {
+            context().deleteDatabase(name)
+        }
+    }
+
+    @Test
+    fun falselyStampedV50IsRejectedBeforeWorkflowQuarantine() {
+        val name = stagedDatabaseName()
+        try {
+            helper.createDatabase(name, 49).use { db ->
+                insertV49Fixture(db)
+                db.execSQL("PRAGMA user_version = 50")
+                db.execSQL("UPDATE room_master_table SET identity_hash = '73b32c82384f8b24fe576d123524249a' WHERE id = 42")
+            }
+            val staged = context().getDatabasePath(name).canonicalFile
+            org.junit.Assert.assertThrows(IllegalStateException::class.java) {
+                ImportedDatabaseReconciler.reconcileStagedFileOrThrow(staged, STREAM_ID, 1L)
+            }
+            SQLiteDatabase.openDatabase(staged.path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+                db.rawQuery("SELECT enabled, stateVersion FROM workflows WHERE id = ?", arrayOf(WORKFLOW_ID)).use {
+                    assertTrue(it.moveToFirst())
+                    assertEquals(1L, it.getLong(0))
+                    assertEquals(1L, it.getLong(1))
+                }
+            }
+        } finally {
+            context().deleteDatabase(name)
+        }
+    }
+
+    @Test
+    fun exactV49StagedImportPreservesWorkflowAndGrant() {
         val name = stagedDatabaseName()
         try {
             helper.createDatabase(name, 49).use(::insertV49Fixture)
@@ -365,12 +466,17 @@ class AppDatabaseV49BackupRestoreRoundTripTest {
         }
 
     private fun assertRestoredFixture(databaseFile: File) {
+        androidx.room.Room.databaseBuilder(context(), AppDatabase::class.java, databaseFile.absolutePath)
+            .openHelperFactory(createAppSQLiteOpenHelperFactory(context()))
+            .build().use { room ->
+                assertEquals(50, room.openHelper.writableDatabase.version)
+            }
         SQLiteDatabase.openDatabase(
             databaseFile.absolutePath,
             null,
             SQLiteDatabase.OPEN_READONLY,
         ).use { database ->
-            assertEquals(49, database.version)
+            assertEquals(50, database.version)
             database.rawQuery(
                 "SELECT identity_hash FROM room_master_table WHERE id = 42",
                 null,

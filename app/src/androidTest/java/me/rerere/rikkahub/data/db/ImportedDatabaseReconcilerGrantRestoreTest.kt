@@ -27,8 +27,8 @@ class ImportedDatabaseReconcilerGrantRestoreTest {
     )
 
     @Test
-    fun exactV46AndV47StagedSnapshotsReachV49ThroughTheFrozenChain() {
-        listOf(46, 47).forEachIndexed { index, version ->
+    fun exactV46AndV47StagedSnapshotsReachV50ThroughTheFrozenChain() {
+        listOf(46, 47, 48, 49).forEachIndexed { index, version ->
             val name = stagedName(index + 1)
             helper.createDatabase(name, version).use { database ->
                 database.execSQL(
@@ -46,7 +46,7 @@ class ImportedDatabaseReconcilerGrantRestoreTest {
                 null,
                 SQLiteDatabase.OPEN_READONLY,
             ).use { database ->
-                assertEquals(49, database.version)
+                assertEquals(50, database.version)
                 database.rawQuery(
                     "SELECT identity_hash FROM room_master_table WHERE id = 42",
                     null,
