@@ -14,6 +14,7 @@ import kotlinx.serialization.json.Json
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.migration.SettingsJsonMigrator
+import me.rerere.rikkahub.data.db.readRetainedLearningOutboxOrThrow
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.SkillPaths
@@ -349,32 +350,8 @@ class BackupArchiveService(
                     check(cursor.moveToFirst() && cursor.getString(0) == "ok" &&
                         !cursor.moveToNext())
                 }
-                val sentinels = database.rawQuery(
-                    "SELECT `stream_id`, `seq` FROM `learning_outbox` " +
-                        "WHERE `event_type` = 'STREAM_INIT' LIMIT 2",
-                    null,
-                ).use { cursor ->
-                    buildList {
-                        while (cursor.moveToNext()) add(cursor.getString(0) to cursor.getLong(1))
-                    }
-                }
-                check(sentinels.size == 1 && sentinels.single().second == 1L)
-                val streamId = sentinels.single().first
-                check(isCanonicalStreamId(streamId))
-                val summary = database.rawQuery(
-                    "SELECT COUNT(*), MIN(`seq`), MAX(`seq`), COUNT(DISTINCT `seq`), " +
-                        "COUNT(DISTINCT `stream_id`) FROM `learning_outbox`",
-                    null,
-                ).use { cursor ->
-                    check(cursor.moveToFirst())
-                    LongArray(5) { cursor.getLong(it) }
-                }
-                val count = summary[0]
-                val minimum = summary[1]
-                val maximum = summary[2]
-                check(count > 0L && minimum == 1L && maximum == count &&
-                    summary[3] == count && summary[4] == 1L)
-                return BackupAuthorityStreamV1(streamId = streamId, headSeq = maximum)
+                val retained = readRetainedLearningOutboxOrThrow(database)
+                return BackupAuthorityStreamV1(streamId = retained.streamId, headSeq = retained.headSeq)
             }
         } catch (error: Exception) {
             throw serviceFailure(BackupArchiveServiceFailure.DATABASE_STREAM_INVALID, error)

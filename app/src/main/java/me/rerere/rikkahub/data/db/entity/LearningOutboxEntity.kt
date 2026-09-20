@@ -103,7 +103,7 @@ data class LearningOutboxEntity(
         // be rejected with a bounded error code. The entity still refuses unsafe scalar values.
         require(seq >= 0L) { "Negative learning outbox sequence" }
         require(runCatching { Uuid.parse(streamId) }.isSuccess) { "Invalid learning stream ID" }
-        require(eventId.isSafeLearningStorageId(MAX_EVENT_ID_CHARS)) {
+        require(isSafeLearningOutboxEventIdentity(eventId)) {
             "Invalid learning event ID"
         }
         require(eventType.isSafeLearningStorageCode()) { "Invalid learning event type" }
@@ -191,3 +191,7 @@ private fun String.isSafeLearningStorageId(maxChars: Int): Boolean =
             char == ':' ||
             char == '@'
     }
+
+/** Shared scalar identity contract for entity writes and raw backup/restore validation. */
+internal fun isSafeLearningOutboxEventIdentity(value: String): Boolean =
+    value.isSafeLearningStorageId(MAX_EVENT_ID_CHARS)

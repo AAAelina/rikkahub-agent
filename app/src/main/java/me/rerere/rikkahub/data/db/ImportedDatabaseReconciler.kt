@@ -1037,41 +1037,7 @@ object ImportedDatabaseReconciler {
         db: SQLiteDatabase,
         payloadColumns: List<String> = LEARNING_V47_SENTINEL_PAYLOAD_COLUMNS,
     ) {
-        val summary = db.rawQuery(
-            "SELECT COUNT(*), " +
-                "SUM(CASE WHEN `event_type` = 'STREAM_INIT' THEN 1 ELSE 0 END), " +
-                "COUNT(DISTINCT `stream_id`) FROM `learning_outbox`",
-            null,
-        ).use { cursor ->
-            check(cursor.moveToFirst()) { "Learning outbox health query returned no row" }
-            Triple(cursor.getLong(0), cursor.getLong(1), cursor.getLong(2))
-        }
-        check(summary.first > 0L) { "Learning outbox has no stream sentinel" }
-        check(summary.second == 1L) { "Learning outbox must have exactly one stream sentinel" }
-        check(summary.third == 1L) { "Learning outbox contains mixed streams" }
-        val payloadProjection = payloadColumns.joinToString(", ") {
-            "`$it`"
-        }
-        db.rawQuery(
-            "SELECT `seq`, `stream_id`, `event_id`, `event_schema_version`, " +
-                payloadProjection + " " +
-                "FROM `learning_outbox` WHERE `event_type` = 'STREAM_INIT' LIMIT 2",
-            null,
-        ).use { cursor ->
-            check(cursor.moveToFirst()) { "Learning outbox sentinel disappeared" }
-            check(cursor.getLong(0) > 0L) { "Learning outbox sentinel has invalid sequence" }
-            check(isCanonicalNonNilDatabaseUuid(cursor.getString(1))) {
-                "Learning outbox sentinel has invalid stream ID"
-            }
-            check(cursor.getString(2) == LEARNING_V46_STREAM_INIT_EVENT_ID) {
-                "Learning outbox sentinel has invalid event ID"
-            }
-            check(cursor.getInt(3) == 1) { "Learning outbox sentinel has invalid schema" }
-            for (column in 4 until cursor.columnCount) {
-                check(cursor.isNull(column)) { "Learning outbox sentinel contains payload fields" }
-            }
-            check(!cursor.moveToNext()) { "Learning outbox contains multiple sentinels" }
-        }
+        readRetainedLearningOutboxOrThrow(db, payloadColumns)
     }
 
     private fun insertLearningOutboxStreamSentinel(
@@ -1102,7 +1068,7 @@ object ImportedDatabaseReconciler {
             check(cursor.moveToFirst()) { "Authority stream query returned no row" }
             val count = cursor.getLong(0)
             check(
-                count == expectedHeadSeq && cursor.getLong(1) == 1L &&
+                count > 0L && cursor.getLong(1) == 1L &&
                     cursor.getLong(2) == expectedHeadSeq && cursor.getLong(3) == count &&
                     cursor.getLong(4) == 1L
             ) { "Staged v46 authority stream does not match the archive descriptor" }
@@ -1701,7 +1667,7 @@ object ImportedDatabaseReconciler {
                 val maximum = cursor.getLong(2)
                 val distinct = cursor.getLong(3)
                 check(minimum == 1L && maximum == expectedHeadSeq &&
-                    count == expectedHeadSeq && distinct == count
+                    count > 0L && distinct == count
                 ) {
                     "Staged database authority stream does not match the manifest"
                 }

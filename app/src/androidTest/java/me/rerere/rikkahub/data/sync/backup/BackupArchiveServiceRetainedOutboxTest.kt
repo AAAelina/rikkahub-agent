@@ -28,11 +28,15 @@ import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import org.junit.Rule
+import org.junit.rules.TestName
+import androidx.test.platform.io.PlatformTestStorageRegistry
 import org.junit.runner.RunWith
 
 /** Actual service export/import on synthetic app-private data; disposable emulator only. */
 @RunWith(AndroidJUnit4::class)
 class BackupArchiveServiceRetainedOutboxTest {
+    @get:Rule val testName = TestName()
     private lateinit var context: Context
     private lateinit var root: File
     private lateinit var database: AppDatabase
@@ -162,9 +166,56 @@ class BackupArchiveServiceRetainedOutboxTest {
             components = setOf(BackupArchiveComponent.DATABASE),
             mainStream = BackupAuthorityStreamV1(STREAM, expectedHead),
             sources = listOf(BackupArchiveSourceV1.FileSource(BACKUP_ARCHIVE_MAIN_DATABASE_ENTRY, snapshot)))
+        preserveSynthetic(archive, "rejected-import.zip")
         assertEquals(BackupRestoreDisposition.ColdRestartRequired, service.restore(archive, true, false))
         database.close()
         assertTrue(ColdRestoreStartupCoordinator.run(context) is ColdRestoreStartupResult.LiveDatabaseUnchanged)
+    }
+
+    @Test
+    fun nonPositiveSequenceRejectsServiceExport() = runBlocking {
+        database.openHelper.writableDatabase.execSQL("UPDATE learning_outbox SET seq=0 WHERE seq=5")
+        expectExportRejected()
+    }
+
+    @Test
+    fun multipleSentinelsRejectServiceExport() = runBlocking {
+        database.openHelper.writableDatabase.execSQL("UPDATE learning_outbox SET event_type='STREAM_INIT' WHERE seq=5")
+        expectExportRejected()
+    }
+
+    @Test
+    fun concurrentPruneAndExportFreezeOneConsistentRetainedSnapshot() = runBlocking {
+        val archive = File(context.cacheDir, "concurrent.zip")
+        coroutineScope {
+            val prune = async(Dispatchers.IO) {
+                RoomLearningPrimaryOutboxRetentionPort(database).pruneOnce(LearningOutboxRetentionRequest(
+                    checkpoints = listOf(LearningDurableConsumerCheckpoint(
+                        consumerId = LearningDurableConsumerId.LEARNING_DERIVED_RUNTIME,
+                        streamId = STREAM, replayGeneration = 1L, lastContiguousSequence = 5L, bootstrapComplete = true,
+                    )), frozenNowMs = 100L, minimumAgeMs = 10L, safetyFloorRows = 2L, batchSize = 10,
+                ))
+            }
+            val export = async(Dispatchers.IO) { service.createBackup(archive, true, false) }
+            prune.await()
+            export.await()
+        }
+        val snapshot = File(context.cacheDir, "frozen.db")
+        BackupArchiveV1FileIO.extractEntry(BackupArchiveV1FileIO.inspect(archive), BACKUP_ARCHIVE_MAIN_DATABASE_ENTRY, snapshot)
+        val sequences = android.database.sqlite.SQLiteDatabase.openDatabase(snapshot.path, null,
+            android.database.sqlite.SQLiteDatabase.OPEN_READONLY).use { db ->
+            db.rawQuery("SELECT seq FROM learning_outbox ORDER BY seq", null).use {
+                buildList { while (it.moveToNext()) add(it.getLong(0)) }
+            }
+        }
+        assertTrue(sequences == listOf(1L, 2L, 3L, 4L, 5L) || sequences == listOf(1L, 4L, 5L))
+        restoreAndReplay(archive, 5L, sequences)
+    }
+
+    private fun preserveSynthetic(file: File, suffix: String) {
+        PlatformTestStorageRegistry.getInstance().openOutputFile("restore-p0-${testName.methodName}-$suffix").use { output ->
+            file.inputStream().use { it.copyTo(output) }
+        }
     }
 
     private fun append(index: Int) {
@@ -175,6 +226,9 @@ class BackupArchiveServiceRetainedOutboxTest {
     }
 
     private suspend fun expectExportRejected() {
+        val snapshot = File(context.cacheDir, "rejected-input.db")
+        database.openHelper.writableDatabase.execSQL("VACUUM INTO ?", arrayOf(snapshot.path))
+        preserveSynthetic(snapshot, "rejected-input.db")
         try {
             service.createBackup(File(context.cacheDir, "rejected.zip"), true, false)
             fail("Malformed retained log must not export")
@@ -186,6 +240,11 @@ class BackupArchiveServiceRetainedOutboxTest {
     private suspend fun roundTrip(head: Long, expected: List<Long>) {
         val archive = File(context.cacheDir, "archive.zip")
         service.createBackup(archive, true, false)
+        restoreAndReplay(archive, head, expected)
+    }
+
+    private suspend fun restoreAndReplay(archive: File, head: Long, expected: List<Long>) {
+        preserveSynthetic(archive, "archive.zip")
         assertEquals(head, BackupArchiveV1FileIO.inspect(archive).manifest.mainStream?.headSeq)
         assertEquals(BackupRestoreDisposition.ColdRestartRequired, service.restore(archive, true, false))
         database.close()
