@@ -153,7 +153,7 @@ class AppDatabaseV49BackupRestoreRoundTripTest {
             SQLiteDatabase.openDatabase(staged.path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
                 db.rawQuery("SELECT enabled, stateVersion FROM workflows WHERE id = ?", arrayOf(WORKFLOW_ID)).use {
                     assertTrue(it.moveToFirst())
-                    assertEquals(1L, it.getLong(0))
+                    assertEquals(0L, it.getLong(0))
                     assertEquals(1L, it.getLong(1))
                 }
             }
@@ -182,50 +182,52 @@ class AppDatabaseV49BackupRestoreRoundTripTest {
     }
 
     @Test
-    fun v49WorkflowAndGrantSurviveArchiveStagePrepareAndLiveSwap() {
-        val sourceName = "v49-backup-source-${randomToken()}"
-        val root = File(context().cacheDir.canonicalFile, "v49-backup-roundtrip-${randomToken()}")
-        val archive = File(context().cacheDir.canonicalFile, "v49-backup-${randomToken()}.zip")
-        try {
-            helper.createDatabase(sourceName, 49).use(::insertV49Fixture)
-            val sourceDatabase = context().getDatabasePath(sourceName).canonicalFile
-            val verified = writeAndVerifyArchive(sourceDatabase, archive)
-            assertEquals(
-                BackupAuthorityStreamV1(STREAM_ID, 1L),
-                verified.manifest.mainStream,
-            )
+    fun v49AndV50ArchivesSurviveStagePrepareSwapAndRoomOpen() {
+        listOf(49, 50).forEach { version ->
+            val sourceName = "v49-backup-source-${randomToken()}"
+            val root = File(context().cacheDir.canonicalFile, "v49-backup-roundtrip-${randomToken()}")
+            val archive = File(context().cacheDir.canonicalFile, "v49-backup-${randomToken()}.zip")
+            try {
+                helper.createDatabase(sourceName, version).use(::insertV49Fixture)
+                val sourceDatabase = context().getDatabasePath(sourceName).canonicalFile
+                val verified = writeAndVerifyArchive(sourceDatabase, archive)
+                assertEquals(
+                    BackupAuthorityStreamV1(STREAM_ID, 1L),
+                    verified.manifest.mainStream,
+                )
 
-            val fixture = prepareColdRestoreFixture(root, liveBytes = "old-live".toByteArray())
-            val staged = ColdRestoreArchiveStager(
-                pathValidation = fixture.stagingPaths,
-                requestIdSource = ColdRestoreRequestIdSource { REQUEST_ID },
-                clockMs = { 10L },
-            ).stage(verified)
-            assertTrue(staged is ColdRestoreStageResult.Staged)
+                val fixture = prepareColdRestoreFixture(root, liveBytes = "old-live".toByteArray())
+                val staged = ColdRestoreArchiveStager(
+                    pathValidation = fixture.stagingPaths,
+                    requestIdSource = ColdRestoreRequestIdSource { REQUEST_ID },
+                    clockMs = { 10L },
+                ).stage(verified)
+                assertTrue(staged is ColdRestoreStageResult.Staged)
 
-            val prepared = ColdRestoreBootstrap(
-                stagingPaths = fixture.stagingPaths,
-                bootstrapPaths = fixture.bootstrapPaths,
-                reconciler = stagedReconciler(),
-                validator = stagedValidator(),
-                clockMs = { 20L },
-            ).prepare()
-            assertTrue(prepared is ColdRestoreBootstrapResult.ReadyToSwap)
+                val prepared = ColdRestoreBootstrap(
+                    stagingPaths = fixture.stagingPaths,
+                    bootstrapPaths = fixture.bootstrapPaths,
+                    reconciler = stagedReconciler(),
+                    validator = stagedValidator(),
+                    clockMs = { 20L },
+                ).prepare()
+                assertTrue(prepared is ColdRestoreBootstrapResult.ReadyToSwap)
 
-            val swapped = ColdRestoreSwapExecutor(
-                stagingPaths = fixture.stagingPaths,
-                bootstrapPaths = fixture.bootstrapPaths,
-                learningPaths = fixture.learningPaths,
-                validator = installedOrStagedValidator(),
-                clockMs = { 30L },
-            ).execute()
-            assertEquals(ColdRestoreSwapResult.RebuildRequired, swapped)
-            assertFalse(fixture.learningDatabase.exists())
-            assertRestoredFixture(fixture.liveDatabase)
-        } finally {
-            context().deleteDatabase(sourceName)
-            archive.delete()
-            root.deleteRecursively()
+                val swapped = ColdRestoreSwapExecutor(
+                    stagingPaths = fixture.stagingPaths,
+                    bootstrapPaths = fixture.bootstrapPaths,
+                    learningPaths = fixture.learningPaths,
+                    validator = installedOrStagedValidator(),
+                    clockMs = { 30L },
+                ).execute()
+                assertEquals(ColdRestoreSwapResult.RebuildRequired, swapped)
+                assertFalse(fixture.learningDatabase.exists())
+                assertRestoredFixture(fixture.liveDatabase)
+            } finally {
+                context().deleteDatabase(sourceName)
+                archive.delete()
+                root.deleteRecursively()
+            }
         }
     }
 
@@ -466,11 +468,14 @@ class AppDatabaseV49BackupRestoreRoundTripTest {
         }
 
     private fun assertRestoredFixture(databaseFile: File) {
-        androidx.room.Room.databaseBuilder(context(), AppDatabase::class.java, databaseFile.absolutePath)
+        val room = androidx.room.Room.databaseBuilder(context(), AppDatabase::class.java, databaseFile.absolutePath)
             .openHelperFactory(createAppSQLiteOpenHelperFactory(context()))
-            .build().use { room ->
-                assertEquals(50, room.openHelper.writableDatabase.version)
-            }
+            .build()
+        try {
+            assertEquals(50, room.openHelper.writableDatabase.version)
+        } finally {
+            room.close()
+        }
         SQLiteDatabase.openDatabase(
             databaseFile.absolutePath,
             null,

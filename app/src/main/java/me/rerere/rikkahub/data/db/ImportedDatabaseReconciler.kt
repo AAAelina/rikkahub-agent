@@ -38,6 +38,8 @@ import me.rerere.rikkahub.data.db.migrations.LEARNING_V48_POLICY_GRANT_INDEX_SQL
 import me.rerere.rikkahub.data.db.migrations.LEARNING_V48_POLICY_GRANT_REVISIONS_TABLE_SQL
 import me.rerere.rikkahub.data.db.migrations.MIGRATION_46_47
 import me.rerere.rikkahub.data.db.migrations.MIGRATION_47_48
+import me.rerere.rikkahub.data.db.migrations.MIGRATION_49_50
+import me.rerere.rikkahub.data.db.migrations.applyMigration49To50Sql
 import me.rerere.rikkahub.data.db.migrations.MIGRATION_48_49
 import me.rerere.rikkahub.data.db.migrations.WORKFLOW_V49_COLUMNS
 import me.rerere.rikkahub.data.db.migrations.workflowV49Backfill
@@ -58,10 +60,8 @@ import me.rerere.rikkahub.data.db.migrations.workflowV49Backfill
  *  - It creates any of the fork-only tables that are missing, empty, with the exact current
  *    schema Room expects (copied verbatim from the current exported schema) — so the file looks
  *    like a clean agent install for those tables.
- *  - If the file is already stamped at the current schema version (so Room would run no
- *    migration), it rewrites Room's identity row to the fork's expected hash. Without this,
- *    Room rejects the foreign hash even though every table is now present. The shared tables
- *    already match because the fork tracks upstream's schema, so trusting the hash is sound.
+ *  - v46+ identities are exact-only. Frozen v46-v49 inputs migrate through the explicit
+ *    raw chain to v50; unknown identities are never repaired by relabeling them.
  *  - If the file is at an older version (upgrade scenario, e.g. official v24 to agent v30),
  *    it keeps the original user_version so Room runs every real migration, including the
  *    explicit 28→29 migration. The fork-only tables are pre-created only as compatibility
@@ -80,9 +80,11 @@ object ImportedDatabaseReconciler {
     private const val TAG = "DbReconciler"
     private const val DB_NAME = "rikka_hub"
 
-    /** Room schema version and exact identity exported from AppDatabase/49.json. */
-    internal const val EXPECTED_VERSION = 49
-    internal const val EXPECTED_IDENTITY_HASH = "967f2a908998f5bac733c1ae71bee5bb"
+    /** Room schema version and exact identity exported from AppDatabase/50.json. */
+    internal const val EXPECTED_VERSION = 50
+    internal const val EXPECTED_IDENTITY_HASH = "73b32c82384f8b24fe576d123524249a"
+    internal const val FINAL_V49_VERSION = 49
+    internal const val FINAL_V49_IDENTITY_HASH = "967f2a908998f5bac733c1ae71bee5bb"
     internal const val FINAL_V48_IDENTITY_HASH = "74be67f9e9e32264c091b1d6c4a32b17"
     internal const val FINAL_V47_IDENTITY_HASH = "3208afdfb6ec01eb325a598464e56940"
     internal const val FINAL_V46_IDENTITY_HASH = "670bbac26f583e5c08349fe9a950570b"
@@ -93,7 +95,7 @@ object ImportedDatabaseReconciler {
     internal const val WORKFLOW_CLAIM_TOMBSTONE = "learning_scope_erased_claim_v1"
     internal const val WORKFLOW_REDACTED_NAME = "Erased learned workflow"
     internal val STAGED_COLD_RESTORE_MIGRATIONS =
-        listOf(MIGRATION_46_47, MIGRATION_47_48, MIGRATION_48_49)
+        listOf(MIGRATION_46_47, MIGRATION_47_48, MIGRATION_48_49, MIGRATION_49_50)
 
     /** Canonical database identities are lowercase UUIDs and never the nil sentinel. */
     internal fun isCanonicalNonNilDatabaseUuid(value: String): Boolean =
@@ -112,6 +114,9 @@ object ImportedDatabaseReconciler {
         version == EXPECTED_VERSION && identityHash == EXPECTED_IDENTITY_HASH ->
             ReconcilePlan.SKIP
         version == EXPECTED_VERSION -> ReconcilePlan.REFUSE_UNKNOWN_CURRENT
+        version == FINAL_V49_VERSION && identityHash == FINAL_V49_IDENTITY_HASH ->
+            ReconcilePlan.FULL_COMPATIBILITY
+        version == FINAL_V49_VERSION -> ReconcilePlan.REFUSE_UNKNOWN_CURRENT
         version == 48 && identityHash == FINAL_V48_IDENTITY_HASH ->
             ReconcilePlan.FULL_COMPATIBILITY
         version == 48 -> ReconcilePlan.REFUSE_UNKNOWN_CURRENT
@@ -129,6 +134,7 @@ object ImportedDatabaseReconciler {
 
     internal enum class StagedReconcilePlan {
         ALREADY_CURRENT,
+        MIGRATE_FINAL_V49,
         MIGRATE_FINAL_V48,
         MIGRATE_FINAL_V47,
         MIGRATE_FINAL_V46,
@@ -148,6 +154,8 @@ object ImportedDatabaseReconciler {
     ): StagedReconcilePlan = when {
         version == EXPECTED_VERSION && identityHash == EXPECTED_IDENTITY_HASH ->
             StagedReconcilePlan.ALREADY_CURRENT
+        version == FINAL_V49_VERSION && identityHash == FINAL_V49_IDENTITY_HASH ->
+            StagedReconcilePlan.MIGRATE_FINAL_V49
         version == 48 && identityHash == FINAL_V48_IDENTITY_HASH ->
             StagedReconcilePlan.MIGRATE_FINAL_V48
         version == 47 && identityHash == FINAL_V47_IDENTITY_HASH ->
@@ -1359,8 +1367,16 @@ object ImportedDatabaseReconciler {
         }
         when (plan) {
             StagedReconcilePlan.ALREADY_CURRENT -> Unit
+            StagedReconcilePlan.MIGRATE_FINAL_V49 ->
+                migrateExactStagedToCurrent(
+                    databaseFile = databaseFile,
+                    expectedStreamId = expectedStreamId,
+                    expectedHeadSeq = expectedHeadSeq,
+                    expectedStartVersion = FINAL_V49_VERSION,
+                    expectedStartIdentity = FINAL_V49_IDENTITY_HASH,
+                )
             StagedReconcilePlan.MIGRATE_FINAL_V48 ->
-                migrateExactStagedToV49(
+                migrateExactStagedToCurrent(
                     databaseFile = databaseFile,
                     expectedStreamId = expectedStreamId,
                     expectedHeadSeq = expectedHeadSeq,
@@ -1368,7 +1384,7 @@ object ImportedDatabaseReconciler {
                     expectedStartIdentity = FINAL_V48_IDENTITY_HASH,
                 )
             StagedReconcilePlan.MIGRATE_FINAL_V47 ->
-                migrateExactStagedToV49(
+                migrateExactStagedToCurrent(
                     databaseFile = databaseFile,
                     expectedStreamId = expectedStreamId,
                     expectedHeadSeq = expectedHeadSeq,
@@ -1376,7 +1392,7 @@ object ImportedDatabaseReconciler {
                     expectedStartIdentity = FINAL_V47_IDENTITY_HASH,
                 )
             StagedReconcilePlan.MIGRATE_FINAL_V46 ->
-                migrateExactStagedToV49(
+                migrateExactStagedToCurrent(
                     databaseFile = databaseFile,
                     expectedStreamId = expectedStreamId,
                     expectedHeadSeq = expectedHeadSeq,
@@ -1384,7 +1400,7 @@ object ImportedDatabaseReconciler {
                     expectedStartIdentity = FINAL_V46_IDENTITY_HASH,
                 )
             StagedReconcilePlan.MIGRATE_PRE_P1_V46 ->
-                migrateExactStagedToV49(
+                migrateExactStagedToCurrent(
                     databaseFile = databaseFile,
                     expectedStreamId = expectedStreamId,
                     expectedHeadSeq = expectedHeadSeq,
@@ -1396,7 +1412,7 @@ object ImportedDatabaseReconciler {
                 check(expectedHeadSeq == 1L) {
                     "A pre-Learning staged database can only create its stream sentinel"
                 }
-                migrateExactStagedToV49(
+                migrateExactStagedToCurrent(
                     databaseFile = databaseFile,
                     expectedStreamId = expectedStreamId,
                     expectedHeadSeq = expectedHeadSeq,
@@ -1407,6 +1423,8 @@ object ImportedDatabaseReconciler {
                 )
             }
         }
+        // Prove the candidate before destructive workflow quarantine, including same-version imports.
+        validateStagedFileOrThrow(databaseFile, expectedStreamId, expectedHeadSeq)
         // The LearningDatabase is quarantined by the following cold swap. Any promoted
         // definition in this staged AppDatabase would lose its candidate/review authority, so
         // redact all LEARNED rows before the file can become live. USER rows are untouched.
@@ -1416,7 +1434,7 @@ object ImportedDatabaseReconciler {
     }
 
     /** Exact-identity migration of the private cold-restore candidate; never accepts a live path. */
-    private fun migrateExactStagedToV49(
+    private fun migrateExactStagedToCurrent(
         databaseFile: File,
         expectedStreamId: String,
         expectedHeadSeq: Long,
@@ -1468,6 +1486,14 @@ object ImportedDatabaseReconciler {
                         requireV47RewardAuthoritySchema(db)
                         requireV48PolicyGrantSchema(db)
                     }
+                    49 -> {
+                        check(!includeP1Floor && !createStream)
+                        requireHealthyLearningOutbox(db)
+                        requireP1LearningAuthoritySchema(db)
+                        requireV47RewardAuthoritySchema(db)
+                        requireV48PolicyGrantSchema(db)
+                        requireV49WorkflowSchema(db)
+                    }
                     else -> error("Unsupported staged migration start version")
                 }
                 requireExactAuthorityStream(db, expectedStreamId, expectedHeadSeq)
@@ -1481,12 +1507,13 @@ object ImportedDatabaseReconciler {
                             MIGRATION_46_47 -> migrateV46ToV47Raw(db)
                             MIGRATION_47_48 -> migrateV47ToV48Raw(db)
                             MIGRATION_48_49 -> migrateV48ToV49Raw(db)
+                            MIGRATION_49_50 -> migrateV49ToV50Raw(db)
                             else -> error(
                                 "Staged cold-restore migration chain contains an unsupported migration",
                             )
                         }
                     }
-                check(db.version == EXPECTED_VERSION) {
+                check(db.version == EXPECTED_VERSION && readRoomIdentityHash(db) == EXPECTED_IDENTITY_HASH) {
                     "Staged cold-restore migration did not reach the current version"
                 }
                 db.setTransactionSuccessful()
@@ -1534,6 +1561,17 @@ object ImportedDatabaseReconciler {
         ensureColumns(db, "workflows", WORKFLOW_V49_COLUMNS)
         backfillWorkflowV49RowsRaw(db)
         requireV49WorkflowSchema(db)
+        db.version = FINAL_V49_VERSION
+        stampIdentity(db, FINAL_V49_IDENTITY_HASH)
+    }
+
+    private fun migrateV49ToV50Raw(db: SQLiteDatabase) {
+        check(db.version == FINAL_V49_VERSION && readRoomIdentityHash(db) == FINAL_V49_IDENTITY_HASH) {
+            "Raw 49 -> 50 migration requires the frozen v49 identity"
+        }
+        requireV49WorkflowSchema(db)
+        applyMigration49To50Sql(db::execSQL)
+        requireV50DreamSchema(db)
         db.version = EXPECTED_VERSION
         stampIdentity(db, EXPECTED_IDENTITY_HASH)
     }
@@ -1642,6 +1680,7 @@ object ImportedDatabaseReconciler {
             requireV47RewardAuthoritySchema(db)
             requireV48PolicyGrantSchema(db)
             requireV49WorkflowSchema(db)
+            requireV50DreamSchema(db)
             db.rawQuery(
                 "SELECT `seq` FROM `learning_outbox` " +
                     "WHERE `stream_id` = ? AND `event_type` = 'STREAM_INIT'",
@@ -1820,12 +1859,13 @@ object ImportedDatabaseReconciler {
                         }
                         48 -> migrateV48ToV49Raw(db)
                     }
+                    if (version in 46..49) migrateV49ToV50Raw(db)
 
                     // Pre-v46 backups must keep their original user_version so Room can run
                     // every real migration (including 28→29). Precreating fork-only tables
                     // makes upstream backups compatible, but stamping the current version here
                     // would silently skip migrations and risk losing schema changes. Exact v46
-                    // and v47/v48 inputs use the explicit raw migration chain above.
+                    // and v47/v48/v49 inputs use the explicit raw migration chain above.
                     if (version < 46) {
                         Log.i(TAG, "reconcile: kept older user_version=$version for Room migrations")
                     } else {
