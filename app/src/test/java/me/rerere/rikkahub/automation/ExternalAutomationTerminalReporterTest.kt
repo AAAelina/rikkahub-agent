@@ -21,7 +21,7 @@ class ExternalAutomationTerminalReporterTest {
             onLedgerFailure = { failures += it.message.orEmpty() },
         ))
         assertFalse(reporter.reportOnce("failed", AgentRunStatus.failed, "replay", "replay",
-            persist = { fail("duplicate ledger write") },
+            persist = { _, _ -> fail("duplicate ledger write") },
             callback = { status, _ -> callbacks += status },
             onLedgerFailure = { fail("duplicate error") },
         ))
