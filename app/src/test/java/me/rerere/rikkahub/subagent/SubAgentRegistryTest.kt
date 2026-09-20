@@ -29,6 +29,42 @@ class SubAgentRegistryTest {
         startedAtMs = System.currentTimeMillis(),
     )
 
+    @Test fun `parallel reservations enforce global and assistant caps atomically`() {
+        val registry = SubAgentRegistry()
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(16)
+        val gate = java.util.concurrent.CountDownLatch(1)
+        try {
+            val futures = (0 until 100).map { index -> pool.submit<SubAgentRegistry.Reservation> {
+                gate.await()
+                registry.reservePending(makeRun("run-$index", parentAssistant = "assistant-${index % 4}"), 7, 2)
+            } }
+            gate.countDown()
+            assertEquals(7, futures.count { it.get() == SubAgentRegistry.Reservation.RESERVED })
+            assertEquals(7, registry.globalActiveCount())
+            (0..3).forEach { assertTrue(registry.activeCountForAssistant("assistant-$it") <= 2) }
+        } finally { pool.shutdownNow() }
+    }
+
+    @Test fun `failure before launch releases reservation without ghost pending`() {
+        val registry = SubAgentRegistry()
+        assertEquals(SubAgentRegistry.Reservation.RESERVED, registry.reservePending(makeRun("a"), 1, 1))
+        registry.terminalizeIfActive("a", SubAgentStatus.FAILED, "ledger failed")
+        assertEquals(0, registry.globalActiveCount())
+        assertEquals(SubAgentRegistry.Reservation.RESERVED, registry.reservePending(makeRun("b"), 1, 1))
+    }
+
+    @Test fun `cancel before job attachment cannot resurrect reserved run`() {
+        val registry = SubAgentRegistry()
+        registry.reservePending(makeRun("a"), 1, 1)
+        assertTrue(registry.requestCancel("a"))
+        val job = Job()
+        registry.setJob("a", job)
+        registry.update("a") { it.copy(status = SubAgentStatus.RUNNING) }
+        assertTrue(job.isCancelled)
+        assertEquals(SubAgentStatus.CANCELLED, registry.get("a")!!.status)
+        assertEquals(0, registry.globalActiveCount())
+    }
+
     @Test fun `addPending puts run in flow`() {
         val r = SubAgentRegistry()
         r.addPending(makeRun("a"))
@@ -69,10 +105,11 @@ class SubAgentRegistryTest {
         assertEquals(1, r.activeCountForAssistant("asst-2"))
     }
 
-    @Test fun `requestCancel returns false when no job registered`() {
+    @Test fun `requestCancel terminalizes pending reservation before job registration`() {
         val r = SubAgentRegistry()
         r.addPending(makeRun("a"))  // no Job
-        assertFalse(r.requestCancel("a"))
+        assertTrue(r.requestCancel("a"))
+        assertEquals(SubAgentStatus.CANCELLED, r.get("a")!!.status)
     }
 
     @Test fun `cancelAllForParent returns count of cancellable jobs`() {

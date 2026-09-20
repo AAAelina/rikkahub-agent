@@ -2,9 +2,13 @@ package me.rerere.rikkahub.subagent
 
 import android.util.Log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -132,22 +136,8 @@ class SubAgentEngine(
                 return@withContext DispatchResult.Reject(resolution.error, resolution.detail)
         }
 
-        if (registry.globalActiveCount() >= SubAgentDefaults.GLOBAL_CONCURRENCY_CAP) {
-            return@withContext DispatchResult.Reject(
-                "global_cap_reached",
-                "max ${SubAgentDefaults.GLOBAL_CONCURRENCY_CAP} concurrent sub-agents across all assistants",
-            )
-        }
         val perAssistantCap = parentAssistant.maxConcurrentSubAgents.coerceIn(
-            SubAgentDefaults.MIN_PER_ASSISTANT_CAP,
-            SubAgentDefaults.MAX_PER_ASSISTANT_CAP,
-        )
-        if (registry.activeCountForAssistant(caller.parentAssistantId) >= perAssistantCap) {
-            return@withContext DispatchResult.Reject(
-                "assistant_cap_reached",
-                "this assistant's max_concurrent_sub_agents cap of $perAssistantCap is reached",
-            )
-        }
+            SubAgentDefaults.MIN_PER_ASSISTANT_CAP, SubAgentDefaults.MAX_PER_ASSISTANT_CAP)
 
         val initialRun = SubAgentRun(
             id = runId,
@@ -163,7 +153,14 @@ class SubAgentEngine(
             status = SubAgentStatus.PENDING,
             startedAtMs = System.currentTimeMillis(),
         )
-        registry.addPending(initialRun)
+        when (registry.reservePending(initialRun, SubAgentDefaults.GLOBAL_CONCURRENCY_CAP, perAssistantCap)) {
+            SubAgentRegistry.Reservation.RESERVED -> Unit
+            SubAgentRegistry.Reservation.GLOBAL_CAP -> return@withContext DispatchResult.Reject("global_cap_reached", "global concurrency cap reached")
+            SubAgentRegistry.Reservation.ASSISTANT_CAP -> return@withContext DispatchResult.Reject("assistant_cap_reached", "assistant concurrency cap reached")
+            SubAgentRegistry.Reservation.DUPLICATE -> return@withContext DispatchResult.Reject("duplicate_run", "run already reserved")
+        }
+
+        try {
 
         val ledgerId = agentRunRepo.open(
             kind = AgentRunKind.SubAgent,
@@ -183,17 +180,79 @@ class SubAgentEngine(
             },
         )
         ledgerIds[runId] = ledgerId
+        // AgentRunRepository.open is best-effort and can swallow cancellation. Do not
+        // launch an independent child if this dispatch was cancelled while opening it.
+        currentCoroutineContext().ensureActive()
 
-        val executionJob = appScope.launch(Dispatchers.IO) {
-            executeRun(runId, caller, cleaned, profile)
+        // A caller can cancel the pending reservation while ledger.open is suspended.
+        // In that case there will be no Job completion callback to close the ledger.
+        if (registry.get(runId)?.status != SubAgentStatus.PENDING) {
+            markTerminal(runId, SubAgentStatus.CANCELLED, "cancelled_before_launch")
+            return@withContext DispatchResult.Ok(registry.get(runId) ?: initialRun)
+        }
+
+        val executionJob = appScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            try {
+                executeRun(runId, caller, cleaned, profile)
+            } finally {
+                withContext(NonCancellable) {
+                    val status = registry.get(runId)?.status
+                    if (status == SubAgentStatus.PENDING || status == SubAgentStatus.RUNNING) {
+                        markTerminal(runId, SubAgentStatus.CANCELLED, "execution_ended_before_terminal")
+                    }
+                    registry.clearJob(runId)
+                }
+            }
+        }
+        val completionSettled = CompletableDeferred<Unit>()
+        executionJob.invokeOnCompletion { cause ->
+            // A cancelled lazy Job never enters executeRun or its finally. Complete
+            // both the registry and the captured *durable* ledger row in that case.
+            // NonCancellable detaches this finalizer from a cancelled appScope Job;
+            // process death is handled separately by AgentRun boot recovery.
+            appScope.launch(NonCancellable + Dispatchers.IO) {
+                val settled = runCatching {
+                    completeSubAgentJob(registry, runId, ledgerId, cause) { id, status, error ->
+                        agentRunRepo.markTerminal(id, status, error)
+                    }
+                }
+                settled.onFailure { Log.w(TAG, "sub-agent job completion ledger cleanup failed", it) }
+                if (settled.isSuccess) ledgerIds.remove(runId, ledgerId)
+                registry.clearJob(runId)
+                completionSettled.complete(Unit)
+            }
         }
         registry.setJob(runId, executionJob)
+        executionJob.start()
 
         if (cleaned.runInBackground) {
             DispatchResult.Ok(registry.get(runId) ?: initialRun)
         } else {
             executionJob.join()
+            completionSettled.await()
             DispatchResult.Ok(registry.get(runId) ?: initialRun)
+        }
+        } catch (failure: Throwable) {
+            // Preserve the *actual* setup failure before stopping any attached Job.
+            // Calling requestCancel first converts a pre-launch ledger/launch failure
+            // into CANCELLED, causing the durable ledger to record the wrong reason.
+            val failureStatus = if (failure is CancellationException) {
+                SubAgentStatus.CANCELLED
+            } else {
+                SubAgentStatus.FAILED
+            }
+            val failureReason = "dispatch_failed:${failure::class.simpleName}"
+            registry.terminalizeIfActive(runId, failureStatus, failureReason)
+            withContext(NonCancellable) {
+                try {
+                    markTerminal(runId, failureStatus, failureReason)
+                } catch (cleanupError: Throwable) {
+                    Log.w(TAG, "sub-agent dispatch cleanup failed", cleanupError)
+                } finally {
+                    registry.clearJob(runId)
+                }
+            }
+            throw failure
         }
     }
 
@@ -334,14 +393,14 @@ class SubAgentEngine(
 
     private suspend fun markTerminal(runId: String, status: SubAgentStatus, error: String?) {
         registry.update(runId) {
-            it.copy(
-                status = status,
-                error = error,
-                finishedAtMs = System.currentTimeMillis(),
-            )
+            if (it.status == SubAgentStatus.PENDING || it.status == SubAgentStatus.RUNNING) {
+                it.copy(status = status, error = error, finishedAtMs = System.currentTimeMillis())
+            } else {
+                it
+            }
         }
         ledgerIds.remove(runId)?.let { ledgerId ->
-            val ledgerStatus = when (status) {
+            val ledgerStatus = when (registry.get(runId)?.status ?: status) {
                 SubAgentStatus.CANCELLED -> AgentRunStatus.cancelled
                 SubAgentStatus.SUCCEEDED -> AgentRunStatus.succeeded
                 else -> AgentRunStatus.failed

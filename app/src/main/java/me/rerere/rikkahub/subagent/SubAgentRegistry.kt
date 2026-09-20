@@ -14,9 +14,7 @@ import java.util.concurrent.ConcurrentHashMap
  * Capped at [SubAgentDefaults.REGISTRY_LRU_CAP] entries — when the cap is reached, the
  * oldest TERMINAL run gets evicted (running runs are never evicted).
  *
- * The registry intentionally does NOT enforce concurrency caps on its own — that's the
- * engine's job, since the engine has access to per-assistant configuration. This object
- * is just a typed mutable map with cancel hooks.
+ * Admission atomically reserves capacity using the caps supplied by the engine.
  */
 class SubAgentRegistry {
 
@@ -30,6 +28,31 @@ class SubAgentRegistry {
      */
     private val activeJobs: ConcurrentHashMap<String, Job> = ConcurrentHashMap()
 
+    enum class Reservation { RESERVED, GLOBAL_CAP, ASSISTANT_CAP, DUPLICATE }
+
+    fun reservePending(run: SubAgentRun, globalCap: Int, assistantCap: Int): Reservation {
+        require(run.status == SubAgentStatus.PENDING)
+        require(globalCap > 0 && assistantCap > 0)
+        while (true) {
+            val current = _runs.value
+            if (run.id in current) return Reservation.DUPLICATE
+            val active = current.values.filter { it.status == SubAgentStatus.PENDING || it.status == SubAgentStatus.RUNNING }
+            if (active.size >= globalCap) return Reservation.GLOBAL_CAP
+            if (active.count { it.parentAssistantId == run.parentAssistantId } >= assistantCap) return Reservation.ASSISTANT_CAP
+            if (_runs.compareAndSet(current, pruneIfNeeded(current) + (run.id to run))) return Reservation.RESERVED
+        }
+    }
+
+    /** Covers failure before launch and cancellation before a lazy coroutine enters its body. */
+    fun terminalizeIfActive(id: String, status: SubAgentStatus, error: String?) {
+        update(id) {
+            if (it.status == SubAgentStatus.PENDING || it.status == SubAgentStatus.RUNNING)
+                it.copy(status = status, error = error, finishedAtMs = System.currentTimeMillis())
+            else it
+        }
+        activeJobs.remove(id)?.cancel()
+    }
+
     fun addPending(run: SubAgentRun, job: Job? = null) {
         _runs.update { current ->
             val pruned = pruneIfNeeded(current)
@@ -41,12 +64,20 @@ class SubAgentRegistry {
     fun update(id: String, transform: (SubAgentRun) -> SubAgentRun) {
         _runs.update { current ->
             val existing = current[id] ?: return@update current
-            current + (id to transform(existing))
+            val next = transform(existing)
+            if (existing.status !in setOf(SubAgentStatus.PENDING, SubAgentStatus.RUNNING) &&
+                next.status in setOf(SubAgentStatus.PENDING, SubAgentStatus.RUNNING)) current
+            else current + (id to next)
         }
     }
 
     fun setJob(id: String, job: Job) {
         activeJobs[id] = job
+        val status = get(id)?.status
+        if (status != SubAgentStatus.PENDING && status != SubAgentStatus.RUNNING) {
+            activeJobs.remove(id, job)
+            job.cancel()
+        }
     }
 
     fun get(id: String): SubAgentRun? = _runs.value[id]
@@ -85,8 +116,11 @@ class SubAgentRegistry {
      * fires) so we don't double-write.
      */
     fun requestCancel(id: String): Boolean {
-        val job = activeJobs.remove(id) ?: return false
-        job.cancel()
+        val run = get(id) ?: return false
+        if (run.status != SubAgentStatus.PENDING && run.status != SubAgentStatus.RUNNING) return false
+        val job = activeJobs.remove(id)
+        if (job != null) job.cancel()
+        else terminalizeIfActive(id, SubAgentStatus.CANCELLED, "cancelled_before_start")
         return true
     }
 
