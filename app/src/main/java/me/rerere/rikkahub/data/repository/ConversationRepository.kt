@@ -288,7 +288,7 @@ class ConversationRepository(
             reconcileOrdinarySourceInCurrentTransaction(conversation)
         }
         authorityCommits.forEach(sourceAuthorityWriter::dispatchPostCommit)
-        messageFtsManager.indexConversation(conversation)
+        refreshSearchProjection(conversation)
     }
 
     suspend fun updateConversation(
@@ -322,7 +322,7 @@ class ConversationRepository(
             }
         }
         authorityCommits.forEach(sourceAuthorityWriter::dispatchPostCommit)
-        messageFtsManager.indexConversation(conversation)
+        refreshSearchProjection(conversation)
         return ConversationUpdateResult.Updated(conversation.id)
     }
 
@@ -496,7 +496,10 @@ class ConversationRepository(
 
     /** Refreshes the non-authoritative FTS projection after a critical transaction commits. */
     suspend fun refreshSearchProjection(conversation: Conversation) {
-        messageFtsManager.indexConversation(conversation)
+        runConversationPostCommitProjection(
+            project = { messageFtsManager.indexConversation(conversation) },
+            onFailure = { Log.w(TAG, "Committed conversation search projection refresh failed", it) },
+        )
     }
 
     suspend fun updateConversationTitle(conversationId: Uuid, title: String) {
@@ -546,8 +549,13 @@ class ConversationRepository(
         if (!deleted) return ConversationDeletionResult.Missing(fullConversation.id)
         authorityCommits.forEach(sourceAuthorityWriter::dispatchPostCommit)
         // FTS is a derived projection, so mutate it only after the authoritative transaction.
-        messageFtsManager.deleteConversation(fullConversation.id.toString())
-        filesManager.deleteChatFiles(fullConversation.files)
+        runConversationPostCommitProjection(
+            project = { messageFtsManager.deleteConversation(fullConversation.id.toString()) },
+            onFailure = { Log.w(TAG, "Deleted conversation search projection cleanup failed", it) },
+        )
+        // A committed row deletion is not proof of exclusive file ownership. Owner branches,
+        // imports and tool results may share these URLs. Retain files until a global ownership
+        // proof can authorize physical cleanup; orphan retention is preferable to data loss.
         return ConversationDeletionResult.Deleted(fullConversation.id)
     }
 

@@ -4779,7 +4779,6 @@ class ChatService(
     private fun updateConversation(conversationId: Uuid, conversation: Conversation) {
         if (conversation.id != conversationId) return
         val session = getOrCreateSession(conversationId)
-        checkFilesDelete(conversation, session.state.value)
         session.replaceState(conversation)
     }
 
@@ -4791,29 +4790,15 @@ class ChatService(
         conversationId: Uuid,
         update: (Conversation) -> Conversation,
     ): Conversation {
-        // ConversationSession serializes read-modify-write updates so concurrent writers
-        // cannot overwrite each other. Also routes through checkFilesDelete so attached files keep
-        // being garbage-collected when removed from the conversation.
+        // Projection is not a durable commit or proof of attachment ownership. Never delete
+        // files here: a rollback or another conversation may still reference them.
         val session = getOrCreateSession(conversationId)
         return session.updateState { current ->
             val next = update(current)
             if (next.id != conversationId) current
             else {
-                checkFilesDelete(next, current)
                 next
             }
-        }
-    }
-
-    private fun checkFilesDelete(newConversation: Conversation, oldConversation: Conversation) {
-        val newFiles = newConversation.files
-        val oldFiles = oldConversation.files
-        val deletedFiles = oldFiles.filter { file ->
-            newFiles.none { it == file }
-        }
-        if (deletedFiles.isNotEmpty()) {
-            filesManager.deleteChatFiles(deletedFiles)
-            Log.w(TAG, "checkFilesDelete: $deletedFiles")
         }
     }
 
