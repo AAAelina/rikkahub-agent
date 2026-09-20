@@ -94,9 +94,14 @@ class ConversationRoomDurabilityGateTest {
                 assertEquals(setOf(mode), durable.modeInjectionIds)
                 assertEquals(newerGraph.messageNodes, durable.messageNodes)
                 assertEquals(2, db.messageNodeDao().getNodesOfConversation(id.toString()).size)
-                // Missing branch identity never recreates a stale node.
-                val vanished = durable.copy(messageNodes = durable.messageNodes.drop(1))
                 val node = newerGraph.messageNodes.last()
+                // Remove the exact targeted node. drop(1) accidentally kept this last node
+                // and asserted that a valid mutation should be rejected.
+                val vanished = durable.copy(
+                    messageNodes = durable.messageNodes.filterNot { it.id == node.id },
+                )
+                assertTrue(vanished.messageNodes.none { it.id == node.id })
+                // Missing branch identity never recreates a stale node.
                 assertNull(applyMessageMutation(vanished, MutateMessageCommand(node.id, node.messages.first().id)))
             }
         } finally { context.deleteDatabase(name) }
