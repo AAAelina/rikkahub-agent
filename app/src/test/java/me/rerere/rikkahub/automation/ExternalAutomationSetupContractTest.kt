@@ -42,4 +42,18 @@ class ExternalAutomationSetupContractTest {
         assertTrue("terminal reporter must use the actual callback surface",
             body.contains("sendCallback(returnAction, returnPackage, requestId, phase, detail)"))
     }
+
+    @Test fun partiallyEnqueuedCommandMustNotBeTreatedAsNeverSubmitted() {
+        val start = source.indexOf("private suspend fun runHeadless(")
+        val end = source.indexOf("private fun sendCallback(", start)
+        assertTrue(start >= 0 && end > start)
+        val body = source.substring(start, end)
+        val attempted = body.indexOf("submissionAttempted = true")
+        val submit = body.indexOf("val submission = chatService.submitUserMessageTracked(")
+        assertTrue("mark submission attempted before enqueue can suspend", attempted >= 0 && submit > attempted)
+        assertTrue("failed submit with an unknown handle must stop/fence",
+            body.contains("setup.finish(!submissionAttempted,"))
+        assertTrue("do not destroy a possibly enqueued command after an exception",
+            body.contains("if (quiescent && inserted && !submissionAttempted)"))
+    }
 }

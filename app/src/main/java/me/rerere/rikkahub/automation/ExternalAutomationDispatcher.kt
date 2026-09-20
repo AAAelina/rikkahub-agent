@@ -168,6 +168,7 @@ class ExternalAutomationDispatcher(
         val setup = ExternalAutomationSetupGuard()
         var ledgerId: String? = null
         var tracked: me.rerere.rikkahub.service.TrackedCommandSubmission? = null
+        var submissionAttempted = false
         var quiescent = false
         var inserted = false
         var createdConversation: Conversation? = null
@@ -226,6 +227,9 @@ class ExternalAutomationDispatcher(
                 },
             )
             val conversationId = requireNotNull(setup.conversationId)
+            // enqueueEnvelope may commit before submitUserMessageTracked returns (or throws).
+            // A null tracked handle alone cannot prove that there is no live command.
+            submissionAttempted = true
             val submission = chatService.submitUserMessageTracked(
                 conversationId, listOf(UIMessagePart.Text(prompt)), origin = CommandOrigin.EXTERNAL_AUTOMATION,
             )
@@ -243,7 +247,7 @@ class ExternalAutomationDispatcher(
         } catch (cancelled: CancellationException) {
             withContext(NonCancellable) {
                 quiescent = try {
-                    setup.finish(tracked == null,
+                    setup.finish(!submissionAttempted,
                         stop = { chatService.stopAndAwaitQuiescence(it,
                             (tracked?.submission as? SubmitResult.Accepted)?.commandId, 5_000L) },
                         unmark = HeadlessConversations::unmark)
@@ -263,7 +267,7 @@ class ExternalAutomationDispatcher(
             Log.w(TAG, "external automation run failed", t)
             withContext(NonCancellable) {
                 quiescent = try {
-                    setup.finish(tracked == null,
+                    setup.finish(!submissionAttempted,
                         stop = { chatService.stopAndAwaitQuiescence(it,
                             (tracked?.submission as? SubmitResult.Accepted)?.commandId, 5_000L) },
                         unmark = HeadlessConversations::unmark)
@@ -277,7 +281,7 @@ class ExternalAutomationDispatcher(
         } finally {
             withContext(NonCancellable) {
                 try {
-                    quiescent = setup.finish(quiescent || tracked == null,
+                    quiescent = setup.finish(quiescent || !submissionAttempted,
                         stop = { chatService.stopAndAwaitQuiescence(it,
                             (tracked?.submission as? SubmitResult.Accepted)?.commandId, 5_000L) },
                         unmark = HeadlessConversations::unmark)
@@ -290,7 +294,7 @@ class ExternalAutomationDispatcher(
                 }
                 // No command was submitted. This is exclusively our newly created empty
                 // conversation; never remove a session whose termination is unconfirmed.
-                if (quiescent && inserted && tracked == null) {
+                if (quiescent && inserted && !submissionAttempted) {
                     try {
                         val orphan = requireNotNull(createdConversation)
                         chatService.dropSession(orphan.id)
