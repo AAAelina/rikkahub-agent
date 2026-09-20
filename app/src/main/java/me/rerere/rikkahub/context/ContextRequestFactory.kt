@@ -57,6 +57,7 @@ object ContextRequestFactory {
     ): ContextInvocationSurface {
         if (isSubAgent) return ContextInvocationSurface.SUBAGENT
         return when (commandOrigin) {
+            CommandOrigin.EXTERNAL_AUTOMATION -> ContextInvocationSurface.EXTERNAL_AUTOMATION
             CommandOrigin.APP_UI -> ContextInvocationSurface.LOCAL_CHAT
             CommandOrigin.SYSTEM_ASSISTANT -> ContextInvocationSurface.SYSTEM_ASSISTANT
             CommandOrigin.SYSTEM_ASSISTANT_KEYGUARD -> ContextInvocationSurface.KEYGUARD

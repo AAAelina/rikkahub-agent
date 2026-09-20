@@ -10,6 +10,17 @@ import org.junit.Test
 
 class ContextRequestFactoryTest {
     @Test
+    fun `external command stays on external automation context surface`() {
+        val request = ContextRequestFactory.create(
+            commandOrigin = CommandOrigin.EXTERNAL_AUTOMATION,
+            toolCallOrigin = ToolCallOrigin.ExternalIntent,
+            assistant = Assistant(), conversationId = "conversation", runId = "run", commandId = "command",
+            isHeadless = true, isSubAgent = false,
+        )!!
+        assertEquals(ContextInvocationSurface.EXTERNAL_AUTOMATION, request.invocationSurface)
+    }
+
+    @Test
     fun `missing run or command identity closes collection`() {
         assertNull(request(runId = null))
         assertNull(request(commandId = null))

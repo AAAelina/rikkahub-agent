@@ -26,6 +26,7 @@ enum class RequiredOutcome { COMPLETED, NOT_FAILED }
 
 enum class CommandOrigin {
     APP_UI,
+    EXTERNAL_AUTOMATION,
     SYSTEM_ASSISTANT,
     SYSTEM_ASSISTANT_KEYGUARD,
     QUICK_CAPTURE,

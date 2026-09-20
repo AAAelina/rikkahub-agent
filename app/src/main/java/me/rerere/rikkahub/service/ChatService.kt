@@ -1016,6 +1016,7 @@ class ChatService(
     private fun resolveToolOrigin(conversationId: Uuid, origin: CommandOrigin): ToolCallOrigin {
         val resolved = when (origin) {
             CommandOrigin.APP_UI -> ToolCallOrigin.LocalChat
+            CommandOrigin.EXTERNAL_AUTOMATION -> ToolCallOrigin.ExternalIntent
             CommandOrigin.TELEGRAM -> ToolCallOrigin.Telegram
             CommandOrigin.WEB_API -> ToolCallOrigin.WebServer
             CommandOrigin.CRON -> ToolCallOrigin.TrustedWorkflow
