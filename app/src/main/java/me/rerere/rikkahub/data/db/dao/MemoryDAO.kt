@@ -39,6 +39,16 @@ interface MemoryDAO {
 
     @Query(
         "SELECT * FROM memoryentity WHERE assistant_id = :scopeId " +
+            "AND lifecycle_status = 'ACTIVE' AND truth_status = 'CONFIRMED' " +
+            "AND (expires_at_ms IS NULL OR expires_at_ms > :nowMs) " +
+            "AND id > :afterId ORDER BY id ASC LIMIT :pageSize",
+    )
+    suspend fun getActiveConfirmedMemoriesForDreamPage(
+        scopeId: String, nowMs: Long, afterId: Int, pageSize: Int,
+    ): List<MemoryEntity>
+
+    @Query(
+        "SELECT * FROM memoryentity WHERE assistant_id = :scopeId " +
             "AND lifecycle_status = 'ACTIVE' AND (expires_at_ms IS NULL OR expires_at_ms > :nowMs) " +
             "AND truth_status = 'CONFIRMED' " +
             "AND memory_kind IN ('USER_PROFILE', 'PREFERENCE', 'WORKING_CONSTRAINT') " +

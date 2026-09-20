@@ -95,7 +95,13 @@ class DreamMemoryAdapter(
     ): Int {
         val pair = DreamPairScope.forAssistant(assistantId)
         var inserted = 0
-        memoryDao.getActiveConfirmedMemoriesForDream(memoryScopeId, nowMs, limit).forEach { memory ->
+        traverseDreamMemoryPages(
+            pageSize = limit,
+            readPage = { afterId, pageSize ->
+                memoryDao.getActiveConfirmedMemoriesForDreamPage(memoryScopeId, nowMs, afterId, pageSize)
+            },
+            id = { it.id },
+        ) { memory ->
             val sourceRef = "memory:$memoryScopeId:${memory.id}:${memory.revision}"
             if (store.ingest(
                 DreamExperienceRecord(

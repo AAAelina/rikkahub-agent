@@ -1,0 +1,25 @@
+# Dream >128 confirmed-memory backfill — isolated closeout (2026-09-21)
+
+## Scope and origin
+- Research generation: user custom RikkaHub up244.0; upstream comparison 2.5.2. The actual Git baseline for this staged chain is `7b8c07971` (C0/C2 eight verified patches + Skill closeout + SubAgent closeout).
+- Only desktop worktree `H:\gbao_codex\rikkahub-dream-closeout-20260921` was edited; formal `H:\rikkahub-agent` retains the user's existing tracked modifications and was not merged/reset/cleaned. Do not use the user's phone.
+- Extracted the old Codex candidate's MemoryDAO keyset query, DreamExperienceAdapters paging call, DreamMemoryTraversal helper, and three JVM traversal tests; added a new actual Android Room persistence test. No other old-worktree changes were copied.
+
+## Production correctness change
+- Before: `DreamMemoryAdapter.ingestConfirmedMemories` read only the first 128 confirmed memories by default. `backfillHistoryIfNeeded` then marked history as backfilled even though later memories had never been ingested.
+- After: a fixed-clock `id > :afterId ORDER BY id ASC LIMIT :pageSize` Room query enumerates all ACTIVE, CONFIRMED, nonexpired memories in the exact assistant scope; each successful ingest advances the keyset cursor. The backfilled marker remains after the adapter returns from the full traversal, not after an arbitrary first page. Retry starts from the beginning; stable experience IDs deduplicate preceding pages.
+- Original bounded `getActiveConfirmedMemoriesForDream` remains unchanged for the separate FULL bootstrap authority projection. Learning/Dreaming/Owner/Pet and their safety and authorization boundaries remain present.
+
+## Verification evidence from the same worktree
+- Focused `:app:testDebugUnitTest --tests '*DreamMemoryTraversalTest'`: **3 tests / 0 failed / 0 errors / 0 skipped**; includes 127/128/129/300 boundaries, injected failure and retry, and non-advancing cursor rejection. App Kotlin compiled and Gradle returned BUILD SUCCESSFUL. Evidence: `build/codex-verification/dream-20260921-focused-jvm-after-memory.log`, `dream-focused-jvm-xml/`.
+- `:app:compileDebugAndroidTestKotlin`: BUILD SUCCESSFUL, confirming the new Android test compiles. Evidence: `build/codex-verification/dream-20260921-androidtest-compile-after-memory.log`.
+- Disposable Pixel 6 / AOSP ATD / API 35 Gradle Managed Device, filtered to **only** `RoomDreamMemoryBackfillAndroidTest`: actual test XML **1 test / 0 failed / 0 errors / 0 skipped**. It inserts 300 confirmed memories and four excluded records, checks actual DAO page sizes 128/128/44 and IDs, verifies 300 persisted Dream experiences, idempotent repeat, and reopening the real Room v50 database. Evidence: `build/codex-verification/dream-20260921-room-disposable-api35.log`, `dream-room-managed-xml/`. This is an emulator test; the user's phone is never selected or installed to.
+- Broader targeted cross-regression `:app:testDebugUnitTest`: **75 suites / 445 tests / 0 failed / 0 errors / 0 skipped**, of which 45 suites / 224 tests are Dream-related. Also includes SubAgent, Skills, ExternalAutomation C2, Conversation C0 and ToolExecutionGate policy. Evidence: `build/codex-verification/dream-20260921-cross-regression.log`, `dream-cross-regression-xml/`. The 3 focused JVM tests are a subset of the 445 regression tests; the single instrumented Room test is separate.
+- All builds run in a single Gradle process at a time, offline, `--no-daemon --no-parallel --max-workers=1`; the older first attempt timed out due to severe memory pressure. Before retry, the user authorized fully closing Edge and Steam, increasing free memory from ~4.38 to ~6.48 GiB. On retry, the App Kotlin compile, instrumented compile and actual Room test all succeeded.
+
+## Limitations and follow-up gates
+- The Android test verifies the actual MemoryDAO -> DreamMemoryAdapter -> RoomDreamExperienceStore route in one persistent on-disk DB; it does not instantiate the full ChatService/conversation-history `DreamExperienceIngestor.backfillHistoryIfNeeded` orchestration, assert its historyBackfilled marker after mid-sync process death, or guarantee an atomic snapshot under simultaneous authority writes. The JVM interruption test covers cursor/retry semantics, not a real process-kill on an Android device.
+- No formal repo integration or production APK release is claimed. Next separate task: C2 actual Android receiver -> AgentRun ledger -> ChatService integration faults; restore/backup v49-v50, Learning sparse outbox, and Full/Slim APK remain pending. Migrate patches into the user's formal dirty branch only after checking those existing edits and agreeing on an integration plan.
+
+## Handoff
+- Export a separate single Dream commit patch based on `7b8c07971` and verify it replays to an identical Git tree in a clean worktree. The exported patch directory is `H:\G宝的升级路程\RikkaHub官方对照\20260921_Dream_closeout_patches`; its delivery.json records exact commit/tree/patch hash. The verification logs and XML remain in the isolated build directory above.
