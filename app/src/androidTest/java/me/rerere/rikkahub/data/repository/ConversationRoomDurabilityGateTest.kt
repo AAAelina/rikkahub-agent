@@ -108,7 +108,12 @@ class ConversationRoomDurabilityGateTest {
         val id = Uuid.random()
         val attachment = File(context.cacheDir, "c0-keep-${Uuid.random()}.bin")
         attachment.writeText("retained")
-        val initial = Conversation.ofId(id, Uuid.random(), listOf(message("stable").toMessageNode()))
+        val attachmentUrl = attachment.toURI().toString()
+        val initial = Conversation.ofId(id, Uuid.random(), listOf(
+            UIMessage(role = MessageRole.USER, parts = listOf(
+                UIMessagePart.Text("stable"), UIMessagePart.Image(attachmentUrl),
+            )).toMessageNode(),
+        ))
         try {
             withDb(name) { db ->
                 db.withTransaction { write(db, initial, insert = true) }
@@ -123,6 +128,11 @@ class ConversationRoomDurabilityGateTest {
                 assertTrue(attempt.isFailure)
                 assertTrue(attachment.isFile)
                 assertEquals("retained", attachment.readText())
+                val rolledBack = requireNotNull(read(db, id))
+                assertEquals("", rolledBack.title)
+                assertEquals(1, rolledBack.messageNodes.size)
+                assertEquals(attachmentUrl,
+                    (rolledBack.currentMessages.single().parts.last() as UIMessagePart.Image).url)
                 db.withTransaction {
                     db.conversationDao().deleteById(id.toString())
                     assertNull(read(db, id))
