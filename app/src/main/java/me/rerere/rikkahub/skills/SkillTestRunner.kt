@@ -1,6 +1,16 @@
 package me.rerere.rikkahub.skills
 
 import android.util.Log
+import androidx.core.net.toUri
+import me.rerere.rikkahub.data.files.FilesManager
+import me.rerere.rikkahub.data.files.FileFolders
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Deferred
+import me.rerere.rikkahub.service.chat.CommandOutcome
+import me.rerere.rikkahub.service.chat.CommandOrigin
+import me.rerere.rikkahub.service.chat.SubmitResult
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
@@ -12,6 +22,7 @@ import me.rerere.rikkahub.data.datastore.getCurrentAssistant
 import me.rerere.rikkahub.data.files.SkillManager
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.data.repository.ConversationDeletionResult
 import me.rerere.rikkahub.service.ChatService
 import java.io.IOException
 import kotlin.uuid.Uuid
@@ -24,13 +35,13 @@ import kotlin.uuid.Uuid
  *  1. reads the skill's body via [SkillManager.readSkillBody] (or the test-injected
  *     [skillBodyReader] seam)
  *  2. creates a fresh, ephemeral conversation under the user's currently-selected assistant
- *  3. registers the conversation id in [HeadlessConversations] BEFORE [ChatService.sendMessage]
+ *  3. registers the conversation id in [HeadlessConversations] BEFORE tracked submission
  *     fires (so the sub-agent recursion guard sees this run as headless and per-tool approval
  *     auto-grants for tools the user has Always-Allowed)
  *  4. dispatches the test prompt + the skill body inlined as the user message
- *  5. waits up to [timeoutMs] (default 2 min) for the generation flow to settle
+ *  5. waits up to [timeoutMs] (default 2 min) for the authoritative command outcome
  *  6. harvests the last assistant message's text + image parts
- *  7. unregisters the conversation, deletes it from Room, drops the session
+ *  7. after quiescence, drops the session, deletes it from Room, then unregisters it
  *
  * The skill body is inlined directly into the test prompt (rather than relying on the
  * `use_skill` tool surface) so the tester works regardless of whether the skill is in
@@ -39,8 +50,7 @@ import kotlin.uuid.Uuid
  *
  * Hard timeout: 2 minutes by default (overridable for tests). If the generation hasn't
  * settled by then, the run returns [TestRunState.Error] with code `tester_timeout` and
- * lets the underlying generation continue (cancellation is best-effort — ChatService's
- * own session lifecycle eventually releases it).
+ * requests stop and waits for quiescence. Unconfirmed termination retains the conversation.
  *
  * Testability seams: the [Driver] interface abstracts everything the runner needs from
  * the `ChatService` + `ConversationRepository` + `SettingsStore` triplet. JVM tests
@@ -52,7 +62,11 @@ class SkillTestRunner(
     private val driver: Driver,
     private val skillBodyReader: (String) -> String?,
     private val timeoutMs: Long = DEFAULT_TIMEOUT_MS,
+    private val cleanupTimeoutMs: Long = 5_000L,
 ) {
+    init {
+        require(cleanupTimeoutMs > 0) { "Cleanup timeout must be positive" }
+    }
 
     /** Production Koin convenience constructor — equivalent to passing [defaultDriver]. */
     constructor(
@@ -60,9 +74,10 @@ class SkillTestRunner(
         skillManager: SkillManager,
         conversationRepo: ConversationRepository,
         settingsStore: SettingsStore,
+        filesManager: FilesManager,
         timeoutMs: Long = DEFAULT_TIMEOUT_MS,
     ) : this(
-        driver = defaultDriver(chatService, conversationRepo, settingsStore),
+        driver = defaultDriver(chatService, conversationRepo, settingsStore, filesManager),
         skillBodyReader = { name -> skillManager.readSkillBody(name) },
         timeoutMs = timeoutMs,
     )
@@ -76,6 +91,7 @@ class SkillTestRunner(
             chatService: ChatService,
             conversationRepo: ConversationRepository,
             settingsStore: SettingsStore,
+            filesManager: FilesManager,
         ): Driver = object : Driver {
             override suspend fun currentAssistantId(): Uuid =
                 settingsStore.settingsFlow.first().getCurrentAssistant().id
@@ -85,17 +101,13 @@ class SkillTestRunner(
                 chatService.initializeConversation(conv.id)
             }
 
-            override fun send(conv: Conversation, parts: List<UIMessagePart>) {
-                chatService.sendMessage(conv.id, parts)
+            override suspend fun submit(conv: Conversation, parts: List<UIMessagePart>): Submission {
+                val tracked = chatService.submitUserMessageTracked(conv.id, parts, origin = CommandOrigin.APP_UI)
+                return Submission((tracked.submission as? SubmitResult.Accepted)?.commandId, tracked.outcome)
             }
 
-            override suspend fun awaitGenerationDone(conversationId: Uuid, timeoutMs: Long): Boolean {
-                val completed: Unit? = withTimeoutOrNull(timeoutMs) {
-                    chatService.getGenerationJobStateFlow(conversationId).first { it == null }
-                    Unit
-                }
-                return completed != null
-            }
+            override suspend fun stopAndAwaitQuiescence(conversationId: Uuid, commandId: Uuid?): Boolean =
+                chatService.stopAndAwaitQuiescence(conversationId, commandId, 5_000L)
 
             override suspend fun harvest(conversationId: Uuid): HarvestResult {
                 val conv = conversationRepo.getConversationById(conversationId)
@@ -113,12 +125,25 @@ class SkillTestRunner(
                 val images = lastAssistant.parts
                     .filterIsInstance<UIMessagePart.Image>()
                     .map { it.url }
-                return HarvestResult(text, images)
+                val retained = retainSkillResultImages(images) { url ->
+                    val entity = if (url.startsWith("file:", ignoreCase = true)) {
+                        filesManager.saveManagedFromFile(FileFolders.TOOL_OUTPUTS, java.io.File(java.net.URI(url)))
+                    } else {
+                        filesManager.saveManagedFromUri(FileFolders.TOOL_OUTPUTS, url.toUri())
+                    }
+                    val file = filesManager.getFile(entity)
+                    check(file.isFile && file.canRead()) { "Skill artifact retention failed" }
+                    file.toURI().toString()
+                }
+                return HarvestResult(text, retained)
             }
 
             override suspend fun cleanup(conv: Conversation) {
-                runCatching { chatService.dropSession(conv.id) }
-                runCatching { conversationRepo.deleteConversation(conv) }
+                chatService.dropSession(conv.id)
+                when (conversationRepo.deleteConversation(conv)) {
+                    is ConversationDeletionResult.Deleted, is ConversationDeletionResult.Missing -> Unit
+                    is ConversationDeletionResult.RetainedSecondUser -> error("Skill conversation deletion protected")
+                }
             }
         }
     }
@@ -130,12 +155,14 @@ class SkillTestRunner(
     interface Driver {
         suspend fun currentAssistantId(): Uuid
         suspend fun startConversation(conv: Conversation)
-        fun send(conv: Conversation, parts: List<UIMessagePart>)
-        /** Returns true if the generation finished, false if [timeoutMs] elapsed first. */
-        suspend fun awaitGenerationDone(conversationId: Uuid, timeoutMs: Long): Boolean
+        suspend fun submit(conv: Conversation, parts: List<UIMessagePart>): Submission
+        suspend fun stopAndAwaitQuiescence(conversationId: Uuid, commandId: Uuid?): Boolean
         suspend fun harvest(conversationId: Uuid): HarvestResult
+        /** Return only after deletion is confirmed; throw on failure or policy retention. */
         suspend fun cleanup(conv: Conversation)
     }
+
+    data class Submission(val commandId: Uuid?, val outcome: Deferred<CommandOutcome>)
 
     data class HarvestResult(val text: String, val imageUrls: List<String>)
 
@@ -183,15 +210,16 @@ class SkillTestRunner(
             newConversation = true,
         ).copy(title = "[Skill test] $skillName")
 
-        // Persist + register-as-headless BEFORE send. Same pattern as
-        // SubAgentEngine.executeRun — the order matters because a tool callback
-        // checking HeadlessConversations.isHeadless during dispatch would otherwise
-        // race the mark.
+        // Record recovery ownership before any setup side effect. Insertion may succeed
+        // even when session initialization fails; mark() may also partially succeed.
         var registered = false
+        var submission: Submission? = null
+        var quiescent = false
+        var harvestIncomplete = false
         try {
-            driver.startConversation(conv)
-            HeadlessConversations.mark(conv.id)
             registered = true
+            HeadlessConversations.mark(conv.id)
+            driver.startConversation(conv)
 
             val composed = buildString {
                 appendLine("You are running the skill below in test mode. Apply it to the user prompt and respond as the skill instructs.")
@@ -203,30 +231,73 @@ class SkillTestRunner(
                 appendLine("User prompt:")
                 append(prompt)
             }
-            driver.send(conv, listOf(UIMessagePart.Text(composed)))
-
-            val finishedInTime = driver.awaitGenerationDone(conv.id, timeoutMs)
-            if (!finishedInTime) {
-                emit(TestRunState.Error("tester_timeout", "exceeded ${timeoutMs / 1_000}s cap"))
+            val tracked = driver.submit(conv, listOf(UIMessagePart.Text(composed)))
+            submission = tracked
+            val outcome = withTimeoutOrNull(timeoutMs) { tracked.outcome.await() }
+            if (outcome == null) {
+                quiescent = driver.stopAndAwaitQuiescence(conv.id, tracked.commandId)
+                emit(TestRunState.Error("tester_timeout", "exceeded ${timeoutMs / 1_000}s cap; quiescent=$quiescent"))
+                return@flow
+            }
+            if (outcome != CommandOutcome.Completed) {
+                val code = when (outcome) {
+                    CommandOutcome.Cancelled, is CommandOutcome.Superseded -> "tester_cancelled"
+                    else -> "tester_failed"
+                }
+                emit(TestRunState.Error(code, outcome.toString()))
+                return@flow
+            }
+            quiescent = driver.stopAndAwaitQuiescence(conv.id, tracked.commandId)
+            if (!quiescent) {
+                emit(TestRunState.Error("termination_unconfirmed", "conversation retained"))
                 return@flow
             }
 
+            harvestIncomplete = true
             val harvested = driver.harvest(conv.id)
+            harvestIncomplete = false
             if (harvested.text.isBlank() && harvested.imageUrls.isEmpty()) {
                 emit(TestRunState.Error("no_response", "the model returned no text or image parts"))
             } else {
                 emit(TestRunState.Done(harvested.text, harvested.imageUrls))
             }
-        } catch (t: Throwable) {
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (t: Exception) {
             // Log via a runCatching so JVM tests (which don't stub android.util.Log) don't
             // explode. The error envelope below carries the same info to the UI.
             runCatching { Log.w(TAG, "runOnce failed for $skillName", t) }
             emit(TestRunState.Error(t::class.simpleName ?: "unknown", t.message))
         } finally {
-            if (registered) {
-                HeadlessConversations.unmark(conv.id)
+            withContext(NonCancellable) {
+                try {
+                    val cleaned = withTimeoutOrNull(cleanupTimeoutMs) {
+                        if (!quiescent) {
+                            quiescent = driver.stopAndAwaitQuiescence(conv.id, submission?.commandId)
+                        }
+                        if (quiescent && !harvestIncomplete) {
+                            driver.cleanup(conv)
+                            if (registered) HeadlessConversations.unmark(conv.id)
+                            true
+                        } else false
+                    } ?: false
+                    if (!cleaned) runCatching { Log.w(TAG, "Retaining skill conversation for recovery: ${conv.id}") }
+                } catch (failure: Exception) {
+                    // Cleanup must not replace cancellation or an already delivered result.
+                    // Leave the recovery marker until deletion has actually succeeded.
+                    runCatching { Log.w(TAG, "Skill conversation cleanup failed: ${conv.id}", failure) }
+                }
+                // Retention is intentional: dropSession is cancellation, never a join.
             }
-            runCatching { driver.cleanup(conv) }
         }
     }
+}
+
+/** Local results gain an independent managed-file owner before ephemeral conversation deletion. */
+internal suspend fun retainSkillResultImages(
+    urls: List<String>,
+    retain: suspend (String) -> String,
+): List<String> = urls.map { url ->
+    if (url.startsWith("file:", ignoreCase = true) || url.startsWith("content:", ignoreCase = true)) retain(url)
+    else url
 }

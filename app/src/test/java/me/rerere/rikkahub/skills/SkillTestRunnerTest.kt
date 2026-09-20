@@ -1,5 +1,7 @@
 package me.rerere.rikkahub.skills
 
+import kotlinx.coroutines.CompletableDeferred
+import me.rerere.rikkahub.service.chat.CommandOutcome
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
@@ -40,23 +42,15 @@ class SkillTestRunnerTest {
             startCalled = true
         }
 
-        override fun send(conv: Conversation, parts: List<UIMessagePart>) {
+        override suspend fun submit(conv: Conversation, parts: List<UIMessagePart>): SkillTestRunner.Submission {
             if (throwOnSend != null) throw throwOnSend
             sentParts = parts
+            return SkillTestRunner.Submission(Uuid.random(), CompletableDeferred<CommandOutcome>().also {
+                if (finishImmediately && sleepBeforeFinishMs == 0L) it.complete(CommandOutcome.Completed)
+            })
         }
 
-        override suspend fun awaitGenerationDone(conversationId: Uuid, timeoutMs: Long): Boolean {
-            if (sleepBeforeFinishMs > 0) {
-                // Honour the caller's timeoutMs — same contract as the production driver
-                // (which wraps the wait in withTimeoutOrNull). If sleepBeforeFinishMs is
-                // longer than the timeout, return false (timed out); otherwise sleep
-                // through and return finishImmediately.
-                val effective = minOf(sleepBeforeFinishMs, timeoutMs)
-                delay(effective)
-                if (sleepBeforeFinishMs > timeoutMs) return false
-            }
-            return finishImmediately
-        }
+        override suspend fun stopAndAwaitQuiescence(conversationId: Uuid, commandId: Uuid?): Boolean = true
 
         override suspend fun harvest(conversationId: Uuid): SkillTestRunner.HarvestResult =
             SkillTestRunner.HarvestResult(harvestText, harvestImages)

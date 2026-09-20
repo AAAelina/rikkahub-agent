@@ -181,6 +181,7 @@ val appModule = module {
             skillManager = get(),
             conversationRepo = get(),
             settingsStore = get(),
+            filesManager = get(),
         )
     }
 
