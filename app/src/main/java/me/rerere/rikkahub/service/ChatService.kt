@@ -585,6 +585,9 @@ internal fun Conversation.withSteeringAuditMessage(
     return copy(messageNodes = messageNodes + message)
 }
 
+/** Debug-only deterministic fault boundaries for the disposable Android integration gate. */
+internal enum class ChatServiceProbePoint { AFTER_ENQUEUE, BEFORE_EXECUTION }
+
 class ChatService(
     private val context: Application,
     private val appScope: AppScope,
@@ -672,6 +675,10 @@ class ChatService(
     private val executionMessageAuthorityBinder:
         me.rerere.rikkahub.data.execution.ExecutionMessageAuthorityBinder,
 ) {
+    @androidx.annotation.VisibleForTesting
+    @Volatile
+    internal var correctnessProbe: (suspend (ChatServiceProbePoint, CommandEnvelope<out ChatCommand>) -> Unit)? = null
+
     /** UI-only admission seam. Disabled mode performs no clock read or allocation. */
     fun beginAgentTimingSubmission(conversationId: Uuid): AgentTimingSubmissionToken? {
         val enabled = settingsStore.settingsFlow.value.displaySetting.showAgentTiming
@@ -1385,6 +1392,7 @@ class ChatService(
             agentTimingSubmission = agentTimingSubmission,
         )
         val submission = getOrCreateRuntime(conversationId).enqueueEnvelope(envelope)
+        if (me.rerere.rikkahub.BuildConfig.DEBUG) correctnessProbe?.invoke(ChatServiceProbePoint.AFTER_ENQUEUE, envelope)
         if (submission !is SubmitResult.Accepted || submission.commandId != envelope.id) {
             agentTimingSubmission?.handle?.finish(AgentTimingTraceStatus.FAILED)
         }
@@ -1747,6 +1755,7 @@ class ChatService(
         envelope: CommandEnvelope<out ChatCommand>,
         control: GenerationRunControl,
     ): RunOutcome {
+        if (me.rerere.rikkahub.BuildConfig.DEBUG) correctnessProbe?.invoke(ChatServiceProbePoint.BEFORE_EXECUTION, envelope)
         val command = envelope.command
         val agentTiming = envelope.agentTimingSubmission?.handle
         agentTiming?.bindCommand(envelope.id)

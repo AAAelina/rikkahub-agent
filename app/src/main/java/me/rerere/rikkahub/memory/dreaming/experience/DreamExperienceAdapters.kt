@@ -164,10 +164,13 @@ class DreamExperienceIngestor(
         memoryScopeId: String,
         nowMs: Long,
     ) {
-        val historyInserted = runCatching {
+        val historyInserted = try {
             backfillHistoryIfNeeded(assistantId, memoryScopeId, nowMs)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            false
         }
-            .getOrDefault(false)
         val result = conversationAdapter.ingest(
             assistantId = assistantId,
             conversationId = conversationId,

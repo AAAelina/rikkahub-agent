@@ -4,7 +4,6 @@ import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
@@ -29,7 +28,6 @@ import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.service.chat.CommandOrigin
 import me.rerere.rikkahub.service.chat.CommandOutcome
-import me.rerere.rikkahub.service.chat.StopCommand
 import kotlin.uuid.Uuid
 
 private const val TAG = "SubAgentEngine"
@@ -275,7 +273,8 @@ class SubAgentEngine(
             assistantId = parentAssistantId,
             newConversation = true,
         ).copy(title = "[Sub-agent] ${request.label?.take(40) ?: request.task.take(40)}")
-        var activeOutcome: Deferred<CommandOutcome>? = null
+        var submissionAttempted = false
+        var quiescent = true
 
         try {
             conversationRepo.insertConversation(conversation)
@@ -295,6 +294,8 @@ class SubAgentEngine(
                         "a tool call: the dispatcher exposes only your final assistant reply.",
                 )
             }
+            submissionAttempted = true
+            quiescent = false
             val tracked = chatService.submitUserMessageTracked(
                 conversationId = conversation.id,
                 content = listOf(UIMessagePart.Text(taskWithWrapup)),
@@ -302,13 +303,12 @@ class SubAgentEngine(
                 dedupeKey = "subagent:$runId",
                 assistantIdSnapshot = parentAssistantId,
             )
-            activeOutcome = tracked.outcome
             val outcome = withTimeoutOrNull(request.timeoutSeconds * 1000L) {
                 tracked.outcome.await()
             }
             if (outcome == null) {
                 withContext(NonCancellable) {
-                    stopAndAwait(conversation.id, tracked.outcome)
+                    quiescent = stopAndAwait(conversation.id)
                 }
                 markTerminal(
                     runId,
@@ -348,7 +348,7 @@ class SubAgentEngine(
             notifyParentIfBackground(caller, registry.get(runId))
         } catch (cancelled: CancellationException) {
             withContext(NonCancellable) {
-                activeOutcome?.let { stopAndAwait(conversation.id, it) }
+                if (submissionAttempted) quiescent = stopAndAwait(conversation.id)
                 markTerminal(runId, SubAgentStatus.CANCELLED, "cancelled")
                 notifyParentIfBackground(caller, registry.get(runId))
             }
@@ -361,23 +361,24 @@ class SubAgentEngine(
             )
             notifyParentIfBackground(caller, registry.get(runId))
         } finally {
-            executionProfileRegistry.remove(conversation.id, profile.runId)
-            HeadlessConversations.unmark(conversation.id)
+            withContext(NonCancellable) {
+                if (submissionAttempted && !quiescent) {
+                    quiescent = runCatching { stopAndAwait(conversation.id) }.getOrDefault(false)
+                }
+                if (quiescent) {
+                    executionProfileRegistry.remove(conversation.id, profile.runId)
+                    HeadlessConversations.unmark(conversation.id)
+                } else {
+                    Log.w(TAG, "Retaining sub-agent scope: command termination is unconfirmed")
+                }
+            }
             registry.clearJob(runId)
         }
     }
 
-    private suspend fun stopAndAwait(
-        conversationId: Uuid,
-        outcome: Deferred<CommandOutcome>,
-    ) {
-        chatService.submitEmergency(
-            conversationId = conversationId,
-            command = StopCommand(pauseQueue = true),
-            origin = CommandOrigin.INTERNAL,
-        )
-        withTimeoutOrNull(STOP_SETTLE_TIMEOUT_MS) { outcome.await() }
-    }
+    private suspend fun stopAndAwait(conversationId: Uuid): Boolean = runCatching {
+        chatService.stopAndAwaitQuiescence(conversationId, null, STOP_SETTLE_TIMEOUT_MS)
+    }.getOrDefault(false)
 
     private fun CommandOutcome.failureDescription(): String = when (this) {
         CommandOutcome.Completed -> "completed"

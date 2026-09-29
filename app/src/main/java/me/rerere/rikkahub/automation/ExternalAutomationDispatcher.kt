@@ -149,8 +149,12 @@ class ExternalAutomationDispatcher(
             Log.w(TAG, "External task accepted but audit log failed", error)
         }
 
+        val entered = java.util.concurrent.atomic.AtomicBoolean(false)
         appScope.launch(Dispatchers.IO) {
+            entered.set(true)
             runHeadless(parsedPrompt, requestId, returnAction, returnPackage)
+        }.invokeOnCompletion {
+            if (!entered.get()) sendCallback(returnAction, returnPackage, requestId, "cancelled", "dispatch scope unavailable")
         }
 
         return "accepted"
@@ -201,7 +205,7 @@ class ExternalAutomationDispatcher(
             ledgerId = setup.prepare(
                 allocate = {
                     val assistant = withContext(Dispatchers.IO) {
-                        settingsStore.settingsFlow.first().getCurrentAssistant()
+                        settingsStore.settingsFlow.first { !it.init }.getCurrentAssistant()
                     }
                     createdConversation = Conversation.ofId(
                         id = Uuid.random(), assistantId = assistant.id, newConversation = true,
