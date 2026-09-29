@@ -172,6 +172,8 @@ class ExternalAutomationDispatcher(
         val setup = ExternalAutomationSetupGuard()
         var ledgerId: String? = null
         var tracked: me.rerere.rikkahub.service.TrackedCommandSubmission? = null
+        // Own the identity before admission: a durable enqueue can outlive a failed return.
+        val submittedCommandId = Uuid.random()
         var submissionAttempted = false
         var quiescent = false
         var inserted = false
@@ -236,11 +238,12 @@ class ExternalAutomationDispatcher(
             submissionAttempted = true
             val submission = chatService.submitUserMessageTracked(
                 conversationId, listOf(UIMessagePart.Text(prompt)), origin = CommandOrigin.EXTERNAL_AUTOMATION,
+                commandId = submittedCommandId,
             )
             tracked = submission
             val outcome = awaitExternalCommandOutcome(submission.outcome, 15L * 60_000L) {
                 quiescent = chatService.stopAndAwaitQuiescence(
-                    conversationId, (submission.submission as? SubmitResult.Accepted)?.commandId, 5_000L)
+                    conversationId, (submission.submission as? SubmitResult.Accepted)?.commandId ?: submittedCommandId, 5_000L)
             }
             val terminal = outcome?.externalTerminal()
             reportTerminalOnce(
@@ -253,7 +256,7 @@ class ExternalAutomationDispatcher(
                 quiescent = try {
                     setup.finish(!submissionAttempted,
                         stop = { chatService.stopAndAwaitQuiescence(it,
-                            (tracked?.submission as? SubmitResult.Accepted)?.commandId, 5_000L) },
+                            (tracked?.submission as? SubmitResult.Accepted)?.commandId ?: submittedCommandId, 5_000L) },
                         unmark = HeadlessConversations::unmark)
                 } catch (cleanupFailure: Exception) {
                     Log.w(TAG, "external automation cancellation cleanup failed", cleanupFailure)
@@ -273,7 +276,7 @@ class ExternalAutomationDispatcher(
                 quiescent = try {
                     setup.finish(!submissionAttempted,
                         stop = { chatService.stopAndAwaitQuiescence(it,
-                            (tracked?.submission as? SubmitResult.Accepted)?.commandId, 5_000L) },
+                            (tracked?.submission as? SubmitResult.Accepted)?.commandId ?: submittedCommandId, 5_000L) },
                         unmark = HeadlessConversations::unmark)
                 } catch (cleanupFailure: Exception) {
                     Log.w(TAG, "external automation exception cleanup failed", cleanupFailure)
@@ -287,7 +290,7 @@ class ExternalAutomationDispatcher(
                 try {
                     quiescent = setup.finish(quiescent || !submissionAttempted,
                         stop = { chatService.stopAndAwaitQuiescence(it,
-                            (tracked?.submission as? SubmitResult.Accepted)?.commandId, 5_000L) },
+                            (tracked?.submission as? SubmitResult.Accepted)?.commandId ?: submittedCommandId, 5_000L) },
                         unmark = HeadlessConversations::unmark)
                 } catch (cleanupFailure: Exception) {
                     Log.w(TAG, "external automation final cleanup failed", cleanupFailure)

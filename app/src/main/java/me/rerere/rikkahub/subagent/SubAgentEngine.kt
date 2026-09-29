@@ -274,7 +274,8 @@ class SubAgentEngine(
             newConversation = true,
         ).copy(title = "[Sub-agent] ${request.label?.take(40) ?: request.task.take(40)}")
         var submissionAttempted = false
-        var submittedCommandId: Uuid? = null
+        // Retain an exact identity even if admission commits and then throws before returning.
+        var submittedCommandId = Uuid.random()
         var quiescent = true
 
         try {
@@ -303,8 +304,9 @@ class SubAgentEngine(
                 origin = CommandOrigin.INTERNAL,
                 dedupeKey = "subagent:$runId",
                 assistantIdSnapshot = parentAssistantId,
+                commandId = submittedCommandId,
             )
-            submittedCommandId = (tracked.submission as? me.rerere.rikkahub.service.chat.SubmitResult.Accepted)?.commandId
+            submittedCommandId = (tracked.submission as? me.rerere.rikkahub.service.chat.SubmitResult.Accepted)?.commandId ?: submittedCommandId
             val outcome = withTimeoutOrNull(request.timeoutSeconds * 1000L) {
                 tracked.outcome.await()
             }

@@ -586,7 +586,7 @@ internal fun Conversation.withSteeringAuditMessage(
 }
 
 /** Debug-only deterministic fault boundaries for the disposable Android integration gate. */
-internal enum class ChatServiceProbePoint { AFTER_ENQUEUE, BEFORE_EXECUTION }
+internal enum class ChatServiceProbePoint { BEFORE_ENQUEUE, AFTER_ENQUEUE, BEFORE_EXECUTION }
 
 class ChatService(
     private val context: Application,
@@ -1391,8 +1391,13 @@ class ChatService(
             ),
             agentTimingSubmission = agentTimingSubmission,
         )
+        if (me.rerere.rikkahub.BuildConfig.DEBUG && envelope.command is SendMessageCommand) {
+            correctnessProbe?.invoke(ChatServiceProbePoint.BEFORE_ENQUEUE, envelope)
+        }
         val submission = getOrCreateRuntime(conversationId).enqueueEnvelope(envelope)
-        if (me.rerere.rikkahub.BuildConfig.DEBUG) correctnessProbe?.invoke(ChatServiceProbePoint.AFTER_ENQUEUE, envelope)
+        if (me.rerere.rikkahub.BuildConfig.DEBUG && envelope.command is SendMessageCommand) {
+            correctnessProbe?.invoke(ChatServiceProbePoint.AFTER_ENQUEUE, envelope)
+        }
         if (submission !is SubmitResult.Accepted || submission.commandId != envelope.id) {
             agentTimingSubmission?.handle?.finish(AgentTimingTraceStatus.FAILED)
         }
@@ -1755,7 +1760,9 @@ class ChatService(
         envelope: CommandEnvelope<out ChatCommand>,
         control: GenerationRunControl,
     ): RunOutcome {
-        if (me.rerere.rikkahub.BuildConfig.DEBUG) correctnessProbe?.invoke(ChatServiceProbePoint.BEFORE_EXECUTION, envelope)
+        if (me.rerere.rikkahub.BuildConfig.DEBUG && envelope.command is SendMessageCommand) {
+            correctnessProbe?.invoke(ChatServiceProbePoint.BEFORE_EXECUTION, envelope)
+        }
         val command = envelope.command
         val agentTiming = envelope.agentTimingSubmission?.handle
         agentTiming?.bindCommand(envelope.id)

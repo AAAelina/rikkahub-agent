@@ -9,6 +9,7 @@ import androidx.core.content.ContextCompat
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
@@ -127,7 +128,7 @@ class HeadlessProductionFaultAndroidTest {
             if (stage == ChatServiceProbePoint.BEFORE_EXECUTION) {
                 executionStarted.complete(Unit)
                 awaitCancellation()
-            } else {
+            } else if (stage == ChatServiceProbePoint.AFTER_ENQUEUE) {
                 admitted.complete(envelope.id)
                 executionStarted.await()
                 error("injected failure after durable enqueue before handle return")
@@ -143,6 +144,16 @@ class HeadlessProductionFaultAndroidTest {
         assertNotNull(row.finishedAtMs)
         withTimeout(10_000L) { while (HeadlessConversations.isHeadless(conversations.single())) delay(10) }
         assertTrue(chat.stopAndAwaitQuiescence(conversations.single(), id, 5_000L))
+        assertEquals(listOf("accepted", "failed"), attempts.toList())
+    }
+
+    @Test fun receiverQueuedAdmissionFailureCancelsTheDurableCommandBeforeHandleReturn() = runBlocking {
+        val probe = failWhileQueued()
+        val request = send()
+        assertEquals("accepted", callback(request))
+        assertEquals("failed", callback(request))
+        assertEquals("failed", ledger(request).status)
+        assertQueuedAdmissionCancelled(probe)
         assertEquals(listOf("accepted", "failed"), attempts.toList())
     }
 
@@ -219,7 +230,7 @@ class HeadlessProductionFaultAndroidTest {
         chat.correctnessProbe = { stage, envelope ->
             conversations.addIfAbsent(envelope.conversationId)
             if (stage == ChatServiceProbePoint.BEFORE_EXECUTION) { executing.complete(envelope.conversationId); awaitCancellation() }
-            else { executing.await(); awaitCancellation() }
+            else if (stage == ChatServiceProbePoint.AFTER_ENQUEUE) { executing.await(); awaitCancellation() }
         }
         val engine = engine(registry, koin.get())
         val result = engine.dispatch(caller(), SubAgentRequest("synthetic active cancellation", runInBackground = true)) as SubAgentEngine.DispatchResult.Ok
@@ -232,6 +243,58 @@ class HeadlessProductionFaultAndroidTest {
         }
         assertTrue(chat.stopAndAwaitQuiescence(conversation, null, 5_000L))
         assertNull(koin.get<SubAgentExecutionProfileRegistry>().get(conversation))
+    }
+
+    @Test fun engineQueuedAdmissionFailureCancelsTheDurableCommandBeforeHandleReturn() = runBlocking {
+        val probe = failWhileQueued()
+        val result = engine(SubAgentRegistry(), koin.get()).dispatch(
+            caller(), SubAgentRequest("synthetic queued admission failure"),
+        ) as SubAgentEngine.DispatchResult.Ok
+        assertEquals(SubAgentStatus.FAILED, result.run.status)
+        assertEquals("failed", koin.get<AgentRunRepository>()
+            .getByDomainId(AgentRunKind.SubAgent, result.run.id).single().status)
+        val conversation = assertQueuedAdmissionCancelled(probe)
+        assertNull(koin.get<SubAgentExecutionProfileRegistry>().get(conversation))
+    }
+
+    private data class QueuedProbe(
+        val admitted: CompletableDeferred<Pair<Uuid, Uuid>> = CompletableDeferred(),
+        val executions: AtomicInteger = AtomicInteger(),
+    )
+
+    private fun failWhileQueued(): QueuedProbe = QueuedProbe().also { probe ->
+        chat.correctnessProbe = { stage, envelope ->
+            conversations.addIfAbsent(envelope.conversationId)
+            when (stage) {
+                ChatServiceProbePoint.BEFORE_ENQUEUE -> {
+                    // Create the real runtime, then await its emergency pause before admission.
+                    chat.getRuntimeStateFlow(envelope.conversationId)
+                    check(chat.stopAndAwaitQuiescence(envelope.conversationId, null, 5_000L))
+                }
+                ChatServiceProbePoint.AFTER_ENQUEUE -> {
+                    check(koin.get<DurableCommandQueue>().findAuthorityRow(envelope.id)?.state == "PENDING")
+                    probe.admitted.complete(envelope.conversationId to envelope.id)
+                    error("injected queued admission failure before handle return")
+                }
+                ChatServiceProbePoint.BEFORE_EXECUTION -> {
+                    probe.executions.incrementAndGet()
+                    error("paused command must never execute")
+                }
+            }
+        }
+    }
+
+    private suspend fun assertQueuedAdmissionCancelled(probe: QueuedProbe): Uuid {
+        val (conversation, command) = withTimeout(10_000L) { probe.admitted.await() }
+        val queue = koin.get<DurableCommandQueue>()
+        withTimeout(10_000L) {
+            while (queue.countActive(conversation) != 0 || HeadlessConversations.isHeadless(conversation)) delay(10)
+        }
+        val row = requireNotNull(queue.findAuthorityRow(command))
+        assertEquals("CANCELLED", row.state)
+        assertNotNull(row.finishedAt)
+        assertEquals(0, probe.executions.get())
+        return conversation
     }
 
     private fun engine(registry: SubAgentRegistry, repository: AgentRunRepository) =
