@@ -205,11 +205,11 @@ tasks.register("p5DisposableManagedDeviceInstructions") {
 // Dedicated JVM gate: it compiles/tests the fixed offline production-component adapters only.
 // It has no assemble/bundle/connected/GMD dependency and publishes one bounded redacted report.
 afterEvaluate {
-    // Explicit known-defect probe, kept separate from the normal green regression gate.
+    // Compatibility entry for the original RED gate; these are now ordinary regression tests.
     // This never starts Android or authorizes production cleanup.
     tasks.register<Test>("restoreSettingsAuthorizationRedProbe") {
         group = "verification"
-        description = "Reproduce the unresolved R3 pre-settings restore cleanup authorization defect"
+        description = "Verify R3 persisted settings cleanup authorization"
         dependsOn("compileDebugUnitTestKotlin", "processDebugUnitTestJavaRes")
         val debugUnitTest = tasks.named<Test>("testDebugUnitTest")
         testClassesDirs = debugUnitTest.get().testClassesDirs
@@ -217,7 +217,6 @@ afterEvaluate {
         filter.includeTestsMatching(
             "me.rerere.rikkahub.learning.storage.restore.ColdRestoreSettingsAuthorizationRedProbeTest",
         )
-        environment("RIKKAHUB_R3_RED_PROBE", "1")
     }
     tasks.register<Test>("p5ProductionEvaluationGate") {
         group = "verification"

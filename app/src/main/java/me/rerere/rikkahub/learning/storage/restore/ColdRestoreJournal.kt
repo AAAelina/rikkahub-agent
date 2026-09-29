@@ -82,6 +82,9 @@ data class ColdRestoreJournalV1(
     val learningQuarantineId: String?,
     val mainQuarantineId: String?,
     val failureCode: ColdRestoreFailureCode?,
+    // Defaults preserve journals created before component replay moved to cold startup.
+    val deferredComponents: Boolean = false,
+    val restoreFiles: Boolean = false,
 ) {
     companion object {
         fun staged(
@@ -456,6 +459,8 @@ private fun immutableFieldsMatch(
     current.journalVersion == next.journalVersion &&
         current.requestId == next.requestId &&
         current.components == next.components &&
+        current.deferredComponents == next.deferredComponents &&
+        current.restoreFiles == next.restoreFiles &&
         current.archiveSize == next.archiveSize &&
         current.archiveSha256 == next.archiveSha256 &&
         current.mainDatabaseSize == next.mainDatabaseSize &&

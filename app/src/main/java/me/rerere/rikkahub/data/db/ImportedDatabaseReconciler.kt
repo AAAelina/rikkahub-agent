@@ -1606,13 +1606,15 @@ object ImportedDatabaseReconciler {
         databaseFile: File,
         expectedStreamId: String,
         expectedHeadSeq: Long,
-    ) {
+        allowHeadAdvance: Boolean = false,
+    ): Long {
         requireAuthorityStreamDescriptor(expectedStreamId, expectedHeadSeq)
         requireSafeInstalledFile(databaseFile)
-        validateCurrentAuthorityFileOrThrow(
+        return validateCurrentAuthorityFileOrThrow(
             databaseFile = databaseFile,
             expectedStreamId = expectedStreamId,
             expectedHeadSeq = expectedHeadSeq,
+            allowHeadAdvance = allowHeadAdvance,
         )
     }
 
@@ -1620,8 +1622,9 @@ object ImportedDatabaseReconciler {
         databaseFile: File,
         expectedStreamId: String,
         expectedHeadSeq: Long,
-    ) {
-        SQLiteDatabase.openDatabase(
+        allowHeadAdvance: Boolean = false,
+    ): Long {
+        return SQLiteDatabase.openDatabase(
             databaseFile.absolutePath,
             null,
             SQLiteDatabase.OPEN_READONLY,
@@ -1666,11 +1669,12 @@ object ImportedDatabaseReconciler {
                 val minimum = cursor.getLong(1)
                 val maximum = cursor.getLong(2)
                 val distinct = cursor.getLong(3)
-                check(minimum == 1L && maximum == expectedHeadSeq &&
+                check(minimum == 1L && (maximum == expectedHeadSeq || allowHeadAdvance && maximum >= expectedHeadSeq) &&
                     count > 0L && distinct == count
                 ) {
                     "Staged database authority stream does not match the manifest"
                 }
+                maximum
             }
         }
     }

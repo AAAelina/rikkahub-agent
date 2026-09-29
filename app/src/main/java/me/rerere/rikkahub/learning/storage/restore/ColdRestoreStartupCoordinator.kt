@@ -29,7 +29,10 @@ sealed interface ColdRestoreStartupResult {
  * WorkManager's Koin factory, SettingsStore, or any other dependency graph is created.
  */
 object ColdRestoreStartupCoordinator {
-    fun run(context: Context): ColdRestoreStartupResult {
+    fun run(
+        context: Context,
+        settingsStore: () -> me.rerere.rikkahub.data.datastore.SettingsStore = { ColdRestoreComponents.settingsStore(context) },
+    ): ColdRestoreStartupResult {
         val appData = File(context.applicationInfo.dataDir)
         val staging = ColdRestoreStagingPaths.verify(appData, context.noBackupFilesDir)
         val validStaging = staging as? ColdRestoreStagingPathValidation.Valid
@@ -97,7 +100,7 @@ object ColdRestoreStartupCoordinator {
             }
         }
 
-        return when (val swapped = ColdRestoreSwapExecutor(
+        val result = when (val swapped = ColdRestoreSwapExecutor(
             stagingPaths = staging,
             bootstrapPaths = bootstrapPaths,
             learningPaths = learningPaths,
@@ -112,45 +115,25 @@ object ColdRestoreStartupCoordinator {
             is ColdRestoreSwapResult.DegradedRestartRequired ->
                 ColdRestoreStartupResult.DegradedRestartRequired("SWAP_${swapped.failure.name}")
         }
+        if ((result == ColdRestoreStartupResult.RebuildRequired || result == ColdRestoreStartupResult.Complete) &&
+            !ColdRestoreComponents.applyBeforeGraph(context, settingsStore)) {
+            return ColdRestoreStartupResult.DegradedRestartRequired("COMPONENT_REPLAY_FAILED")
+        }
+        return result
     }
 
-    /**
-     * Finishes a committed restore when the production Learning runtime is intentionally disabled.
-     *
-     * The main outbox remains the durable authority for a future opt-in rebuild. The quarantined
-     * Learning database belongs to the previous main timeline, so retaining it cannot add safety;
-     * it only leaves the restore journal permanently occupied. This seam is deliberately invoked
-     * after raw main-database reconciliation and before Koin/Room opens either database.
-     *
-     * A validation or cleanup failure is fail-closed: the journal remains for the next cold-start
-     * retry, while the already-validated installed main database may continue normal app startup.
-     */
-    fun finalizeDisabledDerivedState(context: Context): Boolean {
-        val appData = File(context.applicationInfo.dataDir)
-        val staging = ColdRestoreStagingPaths.verify(appData, context.noBackupFilesDir)
-        val validStaging = staging as? ColdRestoreStagingPathValidation.Valid ?: return false
-        return finalizeDisabledDerivedState(
-            journalRead = ColdRestoreJournalStore(validStaging.paths.pendingJournal).read(),
-            validateInstalled = { streamId, headSeq ->
-                ImportedDatabaseReconciler.validateInstalledFileOrThrow(
-                    databaseFile = context.getDatabasePath(MAIN_DATABASE_NAME),
-                    expectedStreamId = streamId,
-                    expectedHeadSeq = headSeq,
-                )
-            },
-            complete = { streamId, headSeq ->
-                ColdRestoreRebuildFinalizer.completeWhenDerivedStateDisabled(
-                    context = context,
-                    streamId = streamId,
-                    authorityHeadSeq = headSeq,
-                )
-            },
-        )
+    /** Called only with persisted settings and the Learning runtime operation fence held. */
+    internal fun finalizeDisabledDerivedState(
+        context: Context,
+        persistedSettings: me.rerere.rikkahub.learning.model.LearningPreferencesV1?,
+    ): Boolean {
+        return ColdRestoreRebuildFinalizer.completeWhenDerivedStateDisabled(context, persistedSettings)
     }
 
     /** Pure decision seam so the flags-off safety order is covered by host JVM tests. */
     internal fun finalizeDisabledDerivedState(
         journalRead: ColdRestoreJournalReadResult,
+        persistedSettings: me.rerere.rikkahub.learning.model.LearningPreferencesV1?,
         validateInstalled: (streamId: String, headSeq: Long) -> Unit,
         complete: (streamId: String, headSeq: Long) -> Boolean,
     ): Boolean {
@@ -164,9 +147,10 @@ object ColdRestoreStartupCoordinator {
         ) {
             return false
         }
+        if (journal.phase == ColdRestorePhase.REBUILD_REQUIRED && !persistedLearningIsDisabled(persistedSettings)) return false
         return try {
             val stream = journal.mainStream
-            validateInstalled(stream.streamId, stream.headSeq)
+            if (journal.phase != ColdRestorePhase.COMPLETE) validateInstalled(stream.streamId, stream.headSeq)
             complete(stream.streamId, stream.headSeq)
         } catch (_: Exception) {
             false

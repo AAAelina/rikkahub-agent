@@ -59,7 +59,7 @@ class BackupArchiveServiceException(
  *
  * Database export uses SQLite `VACUUM INTO` to create a consistent single-file snapshot. Database
  * restore never closes or overwrites the live Room database: after the entire archive is verified,
- * non-database components are applied and the archive is copied into the cold-start staging area.
+ * the entire archive is staged. Selected settings/files are replayed before the next dependency graph opens.
  */
 class BackupArchiveService(
     private val settingsStore: SettingsStore,
@@ -124,9 +124,8 @@ class BackupArchiveService(
             else -> CanonicalRestoreArchive(archive, emptyList())
         }
         try {
-            // Prove/normalize a selected database before mutating independent live settings or
-            // files. A rejected legacy database therefore cannot leave a partial component
-            // restore behind. Neither of those independent components touches Learning DB.
+            // Verify before durable staging. A database restore never mutates live components;
+            // cold startup replays them before Room/Koin opens, including after interruption.
             val coldArchive = canonical?.archive?.let { verifiedArchive ->
                 when (val verified = VerifiedColdRestoreArchive.verify(
                     archiveFile = verifiedArchive.archiveFile,
@@ -141,15 +140,22 @@ class BackupArchiveService(
                 }
             }
 
-            restoreSettingsIfPresent(archive)
-            if (includeFiles) restoreFiles(archive)
-            if (coldArchive == null) return BackupRestoreDisposition.CompletedInCurrentProcess
+            if (coldArchive == null) {
+                return ColdRestoreArchiveStager.withRestoreAdmission(context) {
+                    val restorer = BackupArchiveComponentRestorer(settingsStore, json, context)
+                    restorer.restoreSettingsIfPresent(archive)
+                    if (includeFiles) restorer.restoreFiles(archive)
+                    BackupRestoreDisposition.CompletedInCurrentProcess
+                }
+            }
 
             val stagingPaths = ColdRestoreStagingPaths.verify(
                 applicationDataDirectory = File(context.applicationInfo.dataDir),
                 noBackupFilesDirectory = context.noBackupFilesDir,
             )
-            val staged = ColdRestoreArchiveStager(stagingPaths).stage(coldArchive)
+            val staged = ColdRestoreArchiveStager(stagingPaths).stage(
+                coldArchive, deferComponents = true, restoreFiles = includeFiles,
+            )
             return when (staged) {
                 is ColdRestoreStageResult.Staged -> BackupRestoreDisposition.ColdRestartRequired
                 ColdRestoreStageResult.PendingRestoreExists ->
@@ -162,61 +168,6 @@ class BackupArchiveService(
         } finally {
             canonical?.temporaryArtifacts?.forEach(::deleteExactTemporaryArtifact)
         }
-    }
-
-    private suspend fun restoreSettingsIfPresent(archive: VerifiedBackupArchiveV1) {
-        if (BackupArchiveComponent.SETTINGS !in archive.manifest.components) return
-        val settingsBytes = BackupArchiveV1FileIO.readSmallEntry(
-            archive = archive,
-            name = BACKUP_ARCHIVE_SETTINGS_ENTRY,
-            maxBytes = MAX_SETTINGS_RESTORE_BYTES,
-        )
-        val migrated = SettingsJsonMigrator.migrate(settingsBytes.toString(Charsets.UTF_8))
-        settingsStore.update(
-            BackupSettingsSanitizer.afterPortableRestore(
-                json.decodeFromString<Settings>(migrated),
-            ),
-        )
-    }
-
-    private fun restoreFiles(archive: VerifiedBackupArchiveV1) {
-        val filesRoot = context.filesDir.toPath().toAbsolutePath().normalize()
-        requireSafeOwnedDirectory(filesRoot)
-        BackupArchiveV1FileIO.restoreFileEntries(archive) { entryName ->
-            resolveRestoreTarget(entryName)?.also { target ->
-                ensureSafeTargetParent(filesRoot, target)
-            }
-        }
-    }
-
-    private fun resolveRestoreTarget(entryName: String): File? = when {
-        entryName.startsWith("${FileFolders.UPLOAD}/") -> {
-            val relative = entryName.substringAfter("${FileFolders.UPLOAD}/")
-            if (relative.isBlank() || '/' in relative) null else {
-                val root = ensureDirectOwnedDirectory(File(context.filesDir, FileFolders.UPLOAD))
-                SkillPaths.resolveSkillFile(root, relative)
-            }
-        }
-        entryName.startsWith("${FileFolders.FONTS}/") -> {
-            val relative = entryName.substringAfter("${FileFolders.FONTS}/")
-            if (relative.isBlank() || '/' in relative) null else {
-                File(ensureDirectOwnedDirectory(File(context.filesDir, FileFolders.FONTS)), relative)
-            }
-        }
-        entryName.startsWith("${FileFolders.SKILLS}/") -> {
-            val relative = entryName.substringAfter("${FileFolders.SKILLS}/")
-            val skillName = relative.substringBefore('/', missingDelimiterValue = "")
-            val skillRelativePath = relative.substringAfter('/', missingDelimiterValue = "")
-            if (skillName.isBlank() || skillRelativePath.isBlank()) null else {
-                val root = ensureDirectOwnedDirectory(File(context.filesDir, FileFolders.SKILLS))
-                val skillDir = SkillPaths.resolveSkillDir(root, skillName) ?: return null
-                ensureDirectoryTreeInside(root, skillDir)
-                SkillPaths.resolveSkillFile(skillDir, skillRelativePath)?.also { target ->
-                    ensureDirectoryTreeInside(root, requireNotNull(target.parentFile))
-                }
-            }
-        }
-        else -> null
     }
 
     private fun createConsistentDatabaseSnapshot(): DatabaseSnapshot {
@@ -431,6 +382,68 @@ class BackupArchiveService(
             }
         }
     }
+}
+
+internal class BackupArchiveComponentRestorer(
+    private val settingsStore: SettingsStore,
+    private val json: Json,
+    private val context: Context,
+) {
+    suspend fun restoreSettingsIfPresent(archive: VerifiedBackupArchiveV1) {
+        if (BackupArchiveComponent.SETTINGS !in archive.manifest.components) return
+        val settingsBytes = BackupArchiveV1FileIO.readSmallEntry(
+            archive = archive,
+            name = BACKUP_ARCHIVE_SETTINGS_ENTRY,
+            maxBytes = MAX_SETTINGS_RESTORE_BYTES,
+        )
+        val migrated = SettingsJsonMigrator.migrate(settingsBytes.toString(Charsets.UTF_8))
+        settingsStore.update(
+            BackupSettingsSanitizer.afterPortableRestore(
+                json.decodeFromString<Settings>(migrated),
+            ),
+        )
+    }
+
+    fun restoreFiles(archive: VerifiedBackupArchiveV1) {
+        val filesRoot = context.filesDir.toPath().toAbsolutePath().normalize()
+        requireSafeOwnedDirectory(filesRoot)
+        BackupArchiveV1FileIO.restoreFileEntries(archive) { entryName ->
+            resolveRestoreTarget(entryName)?.also { target ->
+                ensureSafeTargetParent(filesRoot, target)
+            }
+        }
+    }
+
+    private fun resolveRestoreTarget(entryName: String): File? = when {
+        entryName.startsWith("${FileFolders.UPLOAD}/") -> {
+            val relative = entryName.substringAfter("${FileFolders.UPLOAD}/")
+            if (relative.isBlank() || '/' in relative) null else {
+                val root = ensureDirectOwnedDirectory(File(context.filesDir, FileFolders.UPLOAD))
+                SkillPaths.resolveSkillFile(root, relative)
+            }
+        }
+        entryName.startsWith("${FileFolders.FONTS}/") -> {
+            val relative = entryName.substringAfter("${FileFolders.FONTS}/")
+            if (relative.isBlank() || '/' in relative) null else {
+                File(ensureDirectOwnedDirectory(File(context.filesDir, FileFolders.FONTS)), relative)
+            }
+        }
+        entryName.startsWith("${FileFolders.SKILLS}/") -> {
+            val relative = entryName.substringAfter("${FileFolders.SKILLS}/")
+            val skillName = relative.substringBefore('/', missingDelimiterValue = "")
+            val skillRelativePath = relative.substringAfter('/', missingDelimiterValue = "")
+            if (skillName.isBlank() || skillRelativePath.isBlank()) null else {
+                val root = ensureDirectOwnedDirectory(File(context.filesDir, FileFolders.SKILLS))
+                val skillDir = SkillPaths.resolveSkillDir(root, skillName) ?: return null
+                ensureDirectoryTreeInside(root, skillDir)
+                SkillPaths.resolveSkillFile(skillDir, skillRelativePath)?.also { target ->
+                    ensureDirectoryTreeInside(root, requireNotNull(target.parentFile))
+                }
+            }
+        }
+        else -> null
+    }
+
 }
 
 private class DatabaseSnapshot(

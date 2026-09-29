@@ -2150,6 +2150,19 @@ class LearningRuntimeFacade internal constructor(
         // Domain conflicts and programmer errors deliberately propagate. They are not corruption.
     }
 
+    /** Strict persisted consent and cleanup share the reset/restore/maintenance lane. */
+    suspend fun finalizeColdRestore(settings: me.rerere.rikkahub.data.datastore.SettingsStore): Boolean = mutex.withLock {
+        if (restoreLatched.get() || !isMainProcess()) return@withLock false
+        // COMPLETE already contains durable authorization. An unrelated settings read failure
+        // or a later opt-in must not strand a partially deleted quarantine on restart.
+        if (me.rerere.rikkahub.learning.storage.restore.ColdRestoreStartupCoordinator
+                .finalizeDisabledDerivedState(applicationContext, null)) return@withLock true
+        settings.withPersistedLearningPreferences { persisted ->
+            me.rerere.rikkahub.learning.storage.restore.ColdRestoreStartupCoordinator
+                .finalizeDisabledDerivedState(applicationContext, persisted)
+        }
+    }
+
     /** Stops new work, waits for the current operation, then permanently fences this process. */
     suspend fun beginRestore(): Long {
         val nextGeneration = establishRestoreFence()

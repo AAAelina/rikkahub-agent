@@ -122,6 +122,7 @@ private val Context.settingsStore by preferencesDataStore(
 class SettingsStore(
     context: Context,
     scope: AppScope,
+    private val dataStore: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences> = context.settingsStore,
 ) : KoinComponent {
     companion object {
         // 版本号
@@ -222,7 +223,23 @@ class SettingsStore(
         val SPONSOR_ALERT_DISMISSED_AT = intPreferencesKey("sponsor_alert_dismissed_at")
     }
 
-    private val dataStore = context.settingsStore
+    /** No dummy/default-on-error fallback may authorize irreversible restore cleanup.
+     * DataStore serializes this callback with every persisted settings write. */
+    internal suspend fun <T> withPersistedLearningPreferences(
+        operation: suspend (LearningPreferencesV1?) -> T,
+    ): T {
+        var result: Any? = null
+        dataStore.updateData { preferences ->
+            val raw = preferences[LEARNING_PREFERENCES_V1]
+            val persisted = if (raw == null) LearningPreferencesV1() else runCatching {
+                JsonInstant.decodeFromString<LearningPreferencesV1>(raw)
+            }.getOrNull()?.takeIf { it.failClosed() == it }
+            result = operation(persisted)
+            preferences
+        }
+        @Suppress("UNCHECKED_CAST")
+        return result as T
+    }
 
     val settingsFlowRaw = dataStore.data
         .catch { exception ->

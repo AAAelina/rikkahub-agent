@@ -103,22 +103,6 @@ class RikkaHubApp : Application() {
         // opened by Room without crashing on "no such table" or hash mismatch.
         ImportedDatabaseReconciler.reconcile(this)
 
-        // The production Learning feature source is currently fail-closed/all-disabled. A
-        // committed restore therefore has no derived runtime to bootstrap now: validate the exact
-        // installed authority stream, discard only the quarantined old timeline, and retain the
-        // main outbox for a future opt-in rebuild. Failure keeps the journal for retry but must not
-        // brick ordinary chat startup after the main swap has already committed.
-        if (coldRestore == ColdRestoreStartupResult.RebuildRequired ||
-            coldRestore == ColdRestoreStartupResult.Complete
-        ) {
-            if (!ColdRestoreStartupCoordinator.finalizeDisabledDerivedState(this)) {
-                Log.w(
-                    TAG,
-                    "Cold restore derived-state cleanup deferred; journal retained for retry",
-                )
-            }
-        }
-
         startKoin {
             androidLogger()
             androidContext(this@RikkaHubApp)
@@ -138,7 +122,13 @@ class RikkaHubApp : Application() {
         }
         get<AppScope>().launch(Dispatchers.IO) {
             runCatching {
-                get<SettingsStore>().settingsFlow.first { settings -> !settings.init }
+                val settings = get<SettingsStore>()
+                settings.settingsFlow.first { value -> !value.init }
+                if (coldRestore == ColdRestoreStartupResult.RebuildRequired || coldRestore == ColdRestoreStartupResult.Complete) {
+                    if (!get<me.rerere.rikkahub.learning.runtime.LearningRuntimeFacade>().finalizeColdRestore(settings)) {
+                        Log.i(TAG, "Cold restore cleanup retained until persisted consent or completed rebuild authorizes it")
+                    }
+                }
                 get<me.rerere.rikkahub.learning.jobs.LearningWorkScheduler>()
                     .scheduleStartupAndRecovery()
             }.onFailure { error ->

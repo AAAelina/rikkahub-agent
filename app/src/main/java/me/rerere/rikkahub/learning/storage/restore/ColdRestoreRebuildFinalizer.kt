@@ -15,48 +15,48 @@ import java.nio.file.StandardOpenOption
  * the journal in place and blocks another restore for diagnosis.
  */
 object ColdRestoreRebuildFinalizer {
-    fun completeIfProven(
+    internal fun completeIfProven(
         context: Context,
         streamId: String,
         bootstrapHeadSeq: Long,
         lastContiguousSeq: Long,
-    ): Boolean = completeWithProof(
-        context = context,
-        streamId = streamId,
-        expectedHeadSeq = bootstrapHeadSeq,
-        absorbedHeadSeq = lastContiguousSeq,
-    )
+    ): Boolean = completeWithProof(context) { journal ->
+        val installed = inspectInstalled(context, journal)
+        provesColdRestoreRebuild(journal.mainStream, installed, streamId, bootstrapHeadSeq, lastContiguousSeq)
+    }
 
-    /**
-     * Completes cleanup when the derived Learning runtime is explicitly disabled.
-     *
-     * The restored main outbox is the authority and is not pruned in P0, so a future opt-in can
-     * rebuild from it. The quarantined Learning database belongs to the previous main timeline
-     * and must never be reused. Callers must first strictly validate the installed main stream.
-     */
-    fun completeWhenDerivedStateDisabled(
+    internal fun completeWhenDerivedStateDisabled(
         context: Context,
-        streamId: String,
-        authorityHeadSeq: Long,
-    ): Boolean = completeWithProof(
-        context = context,
-        streamId = streamId,
-        expectedHeadSeq = authorityHeadSeq,
-        absorbedHeadSeq = authorityHeadSeq,
-    )
+        persistedSettings: me.rerere.rikkahub.learning.model.LearningPreferencesV1?,
+    ): Boolean = completeWithProof(context) { journal ->
+        ColdRestoreStartupCoordinator.finalizeDisabledDerivedState(
+            journalRead = ColdRestoreJournalReadResult.Valid(journal),
+            persistedSettings = persistedSettings,
+            validateInstalled = { _, _ -> inspectInstalled(context, journal); Unit },
+            complete = { _, _ -> true },
+        )
+    }
 
-    private fun completeWithProof(
+    private fun inspectInstalled(context: Context, journal: ColdRestoreJournalV1) =
+        me.rerere.rikkahub.data.sync.backup.BackupAuthorityStreamV1(
+            journal.mainStream.streamId,
+            me.rerere.rikkahub.data.db.ImportedDatabaseReconciler.validateInstalledFileOrThrow(
+                context.getDatabasePath("rikka_hub"), journal.mainStream.streamId,
+                journal.mainStream.headSeq, allowHeadAdvance = true,
+            ),
+        )
+
+    internal fun completeWithProof(
         context: Context,
-        streamId: String,
-        expectedHeadSeq: Long,
-        absorbedHeadSeq: Long,
+        beforeDelete: (Path) -> Unit = {},
+        proof: (ColdRestoreJournalV1) -> Boolean,
     ): Boolean {
         val appData = File(context.applicationInfo.dataDir)
         val stagingValidation = ColdRestoreStagingPaths.verify(appData, context.noBackupFilesDir)
         val staging = (stagingValidation as? ColdRestoreStagingPathValidation.Valid)?.paths
             ?: return false
-        if (!Files.exists(staging.pendingJournal, LinkOption.NOFOLLOW_LINKS) ||
-            Files.isSymbolicLink(staging.lockFile) ||
+        if (!Files.exists(staging.pendingJournal, LinkOption.NOFOLLOW_LINKS)) return true
+        if (Files.isSymbolicLink(staging.lockFile) ||
             !Files.isRegularFile(staging.lockFile, LinkOption.NOFOLLOW_LINKS)
         ) {
             return false
@@ -75,9 +75,8 @@ object ColdRestoreRebuildFinalizer {
                 lock.use {
                     completeWhileLocked(
                         staging,
-                        streamId,
-                        expectedHeadSeq,
-                        absorbedHeadSeq,
+                        proof,
+                        beforeDelete,
                     )
                 }
             }
@@ -86,9 +85,8 @@ object ColdRestoreRebuildFinalizer {
 
     private fun completeWhileLocked(
         staging: ColdRestoreStagingPaths,
-        streamId: String,
-        bootstrapHeadSeq: Long,
-        lastContiguousSeq: Long,
+        proof: (ColdRestoreJournalV1) -> Boolean,
+        beforeDelete: (Path) -> Unit,
     ): Boolean {
         var journal = when (val read = ColdRestoreJournalStore(staging.pendingJournal).read()) {
             is ColdRestoreJournalReadResult.Valid -> read.journal
@@ -101,13 +99,8 @@ object ColdRestoreRebuildFinalizer {
         ) {
             return false
         }
-        if (journal.mainStream.streamId != streamId ||
-            bootstrapHeadSeq != journal.mainStream.headSeq ||
-            lastContiguousSeq < bootstrapHeadSeq
-        ) {
-            return false
-        }
         if (journal.phase == ColdRestorePhase.REBUILD_REQUIRED) {
+            if (!ColdRestoreComponents.applied(staging, journal) || !proof(journal)) return false
             val now = System.currentTimeMillis().coerceAtLeast(journal.updatedAtMs)
             val complete = journal.copy(
                 stateVersion = journal.stateVersion + 1L,
@@ -137,14 +130,15 @@ object ColdRestoreRebuildFinalizer {
             ".rikka_hub_quarantine_",
             requireNotNull(journal.mainQuarantineId),
         ) ?: return false
-        if (!deleteExactBatch(learningDirectory, LEARNING_NAMES) ||
-            !deleteExactBatch(mainDirectory, MAIN_NAMES)
+        if (!deleteExactBatch(learningDirectory, LEARNING_NAMES, beforeDelete) ||
+            !deleteExactBatch(mainDirectory, MAIN_NAMES, beforeDelete)
         ) {
             return false
         }
 
         val requestDirectory = staging.requestDirectory(journal.requestId)
-        if (!deleteExactRequestDirectory(requestDirectory, staging.rootDirectory)) return false
+        if (!deleteExactRequestDirectory(requestDirectory, staging.rootDirectory, beforeDelete)) return false
+        beforeDelete(staging.pendingJournal)
         return Files.deleteIfExists(staging.pendingJournal)
     }
 }
@@ -172,7 +166,7 @@ private fun exactQuarantine(parent: Path, prefix: String, id: String): Path? {
     }
 }
 
-private fun deleteExactBatch(directory: Path, allowedNames: Set<String>): Boolean {
+private fun deleteExactBatch(directory: Path, allowedNames: Set<String>, beforeDelete: (Path) -> Unit): Boolean {
     if (!Files.exists(directory, LinkOption.NOFOLLOW_LINKS)) return true
     if (Files.isSymbolicLink(directory) ||
         !Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)
@@ -188,11 +182,15 @@ private fun deleteExactBatch(directory: Path, allowedNames: Set<String>): Boolea
     ) {
         return false
     }
-    for (entry in entries) if (!Files.deleteIfExists(entry)) return false
+    for (entry in entries) {
+        beforeDelete(entry)
+        if (!Files.deleteIfExists(entry)) return false
+    }
+    beforeDelete(directory)
     return Files.deleteIfExists(directory)
 }
 
-private fun deleteExactRequestDirectory(directory: Path, parent: Path): Boolean {
+private fun deleteExactRequestDirectory(directory: Path, parent: Path, beforeDelete: (Path) -> Unit): Boolean {
     if (directory.parent != parent || !FINALIZER_REQUEST.matches(directory.fileName.toString())) {
         return false
     }
@@ -205,14 +203,18 @@ private fun deleteExactRequestDirectory(directory: Path, parent: Path): Boolean 
     }
     val entries = Files.newDirectoryStream(directory).use { it.toList() }
     if (entries.any { entry ->
-            entry.parent != directory || entry.fileName.toString() != "archive.zip" ||
+            entry.parent != directory || entry.fileName.toString() !in setOf("archive.zip", ColdRestoreComponents.RECEIPT, ColdRestoreComponents.PART) ||
                 Files.isSymbolicLink(entry) ||
                 !Files.isRegularFile(entry, LinkOption.NOFOLLOW_LINKS)
         }
     ) {
         return false
     }
-    for (entry in entries) if (!Files.deleteIfExists(entry)) return false
+    for (entry in entries) {
+        beforeDelete(entry)
+        if (!Files.deleteIfExists(entry)) return false
+    }
+    beforeDelete(directory)
     return Files.deleteIfExists(directory)
 }
 

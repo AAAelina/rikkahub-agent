@@ -244,7 +244,11 @@ class ColdRestoreArchiveStager(
         ColdRestoreRequestIdSource { newRequestId() },
     private val clockMs: () -> Long = System::currentTimeMillis,
 ) {
-    fun stage(archive: VerifiedColdRestoreArchive): ColdRestoreStageResult {
+    fun stage(
+        archive: VerifiedColdRestoreArchive,
+        deferComponents: Boolean = false,
+        restoreFiles: Boolean = false,
+    ): ColdRestoreStageResult {
         val paths = when (pathValidation) {
             is ColdRestoreStagingPathValidation.Invalid -> {
                 return ColdRestoreStageResult.Rejected(
@@ -273,7 +277,7 @@ class ColdRestoreArchiveStager(
                 if (lock == null) {
                     ColdRestoreStageResult.Busy
                 } else {
-                    lock.use { stageWhileLocked(paths, archive) }
+                    lock.use { stageWhileLocked(paths, archive, deferComponents, restoreFiles) }
                 }
             }
         } catch (_: Exception) {
@@ -284,6 +288,8 @@ class ColdRestoreArchiveStager(
     private fun stageWhileLocked(
         paths: ColdRestoreStagingPaths,
         archive: VerifiedColdRestoreArchive,
+        deferComponents: Boolean,
+        restoreFiles: Boolean,
     ): ColdRestoreStageResult {
         if (Files.exists(paths.pendingJournal, LinkOption.NOFOLLOW_LINKS)) {
             return if (Files.isSymbolicLink(paths.pendingJournal) ||
@@ -359,7 +365,7 @@ class ColdRestoreArchiveStager(
                 mainDatabaseSha256 = database.sha256,
                 mainStream = stream,
                 createdAtMs = createdAtMs,
-            )
+            ).copy(deferredComponents = deferComponents, restoreFiles = restoreFiles)
             val writeResult = ColdRestoreJournalStore(paths.pendingJournal).create(journal)
             return when (writeResult) {
                 ColdRestoreJournalWriteResult.Written -> {
@@ -390,6 +396,36 @@ class ColdRestoreArchiveStager(
                 runCatching { Files.deleteIfExists(stagedArchive) }
                 // Exact, non-recursive cleanup only. A non-empty/changed directory is retained.
                 runCatching { Files.deleteIfExists(requestDirectory) }
+            }
+        }
+    }
+
+    companion object {
+        /** The same cross-process lane rejects any second restore before live component writes. */
+        internal suspend fun <T> withRestoreAdmission(
+            context: android.content.Context,
+            operation: suspend () -> T,
+        ): T {
+            val paths = (ColdRestoreStagingPaths.verify(
+                File(context.applicationInfo.dataDir), context.noBackupFilesDir,
+            ) as? ColdRestoreStagingPathValidation.Valid)?.paths
+                ?: throw me.rerere.rikkahub.data.sync.backup.BackupArchiveServiceException(
+                    me.rerere.rikkahub.data.sync.backup.BackupArchiveServiceFailure.COLD_STAGING_PATH_UNSAFE,
+                )
+            check(ensureRoot(paths) && ensureRegularLockFile(paths.lockFile))
+            return FileChannel.open(paths.lockFile, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS).use { channel ->
+                val lock = try { channel.tryLock() } catch (_: OverlappingFileLockException) { null }
+                    ?: throw me.rerere.rikkahub.data.sync.backup.BackupArchiveServiceException(
+                        me.rerere.rikkahub.data.sync.backup.BackupArchiveServiceFailure.COLD_STAGING_BUSY,
+                    )
+                lock.use {
+                    if (Files.exists(paths.pendingJournal, LinkOption.NOFOLLOW_LINKS)) {
+                        throw me.rerere.rikkahub.data.sync.backup.BackupArchiveServiceException(
+                            me.rerere.rikkahub.data.sync.backup.BackupArchiveServiceFailure.COLD_RESTORE_ALREADY_PENDING,
+                        )
+                    }
+                    operation()
+                }
             }
         }
     }

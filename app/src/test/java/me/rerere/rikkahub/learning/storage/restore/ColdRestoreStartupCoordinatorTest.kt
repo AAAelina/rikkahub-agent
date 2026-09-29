@@ -14,6 +14,7 @@ class ColdRestoreStartupCoordinatorTest {
 
         assertTrue(
             ColdRestoreStartupCoordinator.finalizeDisabledDerivedState(
+                persistedSettings = me.rerere.rikkahub.learning.model.LearningPreferencesV1(),
                 journalRead = ColdRestoreJournalReadResult.Missing,
                 validateInstalled = { _, _ -> callbackCount += 1 },
                 complete = { _, _ ->
@@ -36,6 +37,7 @@ class ColdRestoreStartupCoordinatorTest {
 
         assertFalse(
             ColdRestoreStartupCoordinator.finalizeDisabledDerivedState(
+                persistedSettings = me.rerere.rikkahub.learning.model.LearningPreferencesV1(),
                 journalRead = ColdRestoreJournalReadResult.Invalid(
                     readFailure = ColdRestoreJournalReadFailure.MALFORMED_JSON,
                 ),
@@ -45,6 +47,7 @@ class ColdRestoreStartupCoordinatorTest {
         )
         assertFalse(
             ColdRestoreStartupCoordinator.finalizeDisabledDerivedState(
+                persistedSettings = me.rerere.rikkahub.learning.model.LearningPreferencesV1(),
                 journalRead = ColdRestoreJournalReadResult.Valid(
                     terminalJournal(ColdRestorePhase.REBUILD_REQUIRED).copy(
                         phase = ColdRestorePhase.SWAP_COMMITTED,
@@ -64,6 +67,7 @@ class ColdRestoreStartupCoordinatorTest {
 
         assertTrue(
             ColdRestoreStartupCoordinator.finalizeDisabledDerivedState(
+                persistedSettings = me.rerere.rikkahub.learning.model.LearningPreferencesV1(),
                 journalRead = ColdRestoreJournalReadResult.Valid(journal),
                 validateInstalled = { streamId, headSeq ->
                     calls += "validate:$streamId:$headSeq"
@@ -84,12 +88,13 @@ class ColdRestoreStartupCoordinatorTest {
     }
 
     @Test
-    fun `complete journal retries exact cleanup after installed validation`() {
+    fun `complete journal is durable authorization without revalidating mutable live head`() {
         val calls = mutableListOf<String>()
         val journal = terminalJournal(ColdRestorePhase.COMPLETE)
 
         assertTrue(
             ColdRestoreStartupCoordinator.finalizeDisabledDerivedState(
+                persistedSettings = me.rerere.rikkahub.learning.model.LearningPreferencesV1(),
                 journalRead = ColdRestoreJournalReadResult.Valid(journal),
                 validateInstalled = { _, _ -> calls += "validate" },
                 complete = { _, _ ->
@@ -98,7 +103,7 @@ class ColdRestoreStartupCoordinatorTest {
                 },
             ),
         )
-        assertEquals(listOf("validate", "complete"), calls)
+        assertEquals(listOf("complete"), calls)
     }
 
     @Test
@@ -107,6 +112,7 @@ class ColdRestoreStartupCoordinatorTest {
 
         assertFalse(
             ColdRestoreStartupCoordinator.finalizeDisabledDerivedState(
+                persistedSettings = me.rerere.rikkahub.learning.model.LearningPreferencesV1(),
                 journalRead = ColdRestoreJournalReadResult.Valid(
                     terminalJournal(ColdRestorePhase.REBUILD_REQUIRED),
                 ),
@@ -124,6 +130,7 @@ class ColdRestoreStartupCoordinatorTest {
     fun `cleanup refusal is propagated so the journal remains retryable`() {
         assertFalse(
             ColdRestoreStartupCoordinator.finalizeDisabledDerivedState(
+                persistedSettings = me.rerere.rikkahub.learning.model.LearningPreferencesV1(),
                 journalRead = ColdRestoreJournalReadResult.Valid(
                     terminalJournal(ColdRestorePhase.REBUILD_REQUIRED),
                 ),
