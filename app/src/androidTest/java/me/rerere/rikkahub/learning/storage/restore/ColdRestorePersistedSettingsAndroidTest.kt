@@ -270,5 +270,3 @@ class ColdRestorePersistedSettingsAndroidTest {
     }
     private companion object { const val STREAM = "00000000-0000-4000-8000-0000000000a3" }
 }
-
-
