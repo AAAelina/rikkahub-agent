@@ -25,7 +25,7 @@ class ExternalAutomationSetupContractTest {
         val firstTry = body.indexOf("try {")
         assertTrue("setup must be protected by try/catch", firstTry >= 0)
         for (stage in listOf(
-            "settingsStore.settingsFlow.first()",
+            "settingsStore.settingsFlow.first { !it.init }",
             "conversationRepo.insertConversation(",
             "chatService.initializeConversation(",
             "HeadlessConversations.mark(",

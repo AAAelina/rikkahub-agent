@@ -274,6 +274,7 @@ class SubAgentEngine(
             newConversation = true,
         ).copy(title = "[Sub-agent] ${request.label?.take(40) ?: request.task.take(40)}")
         var submissionAttempted = false
+        var submittedCommandId: Uuid? = null
         var quiescent = true
 
         try {
@@ -303,12 +304,13 @@ class SubAgentEngine(
                 dedupeKey = "subagent:$runId",
                 assistantIdSnapshot = parentAssistantId,
             )
+            submittedCommandId = (tracked.submission as? me.rerere.rikkahub.service.chat.SubmitResult.Accepted)?.commandId
             val outcome = withTimeoutOrNull(request.timeoutSeconds * 1000L) {
                 tracked.outcome.await()
             }
             if (outcome == null) {
                 withContext(NonCancellable) {
-                    quiescent = stopAndAwait(conversation.id)
+                    quiescent = stopAndAwait(conversation.id, submittedCommandId)
                 }
                 markTerminal(
                     runId,
@@ -348,7 +350,7 @@ class SubAgentEngine(
             notifyParentIfBackground(caller, registry.get(runId))
         } catch (cancelled: CancellationException) {
             withContext(NonCancellable) {
-                if (submissionAttempted) quiescent = stopAndAwait(conversation.id)
+                if (submissionAttempted) quiescent = stopAndAwait(conversation.id, submittedCommandId)
                 markTerminal(runId, SubAgentStatus.CANCELLED, "cancelled")
                 notifyParentIfBackground(caller, registry.get(runId))
             }
@@ -363,7 +365,7 @@ class SubAgentEngine(
         } finally {
             withContext(NonCancellable) {
                 if (submissionAttempted && !quiescent) {
-                    quiescent = runCatching { stopAndAwait(conversation.id) }.getOrDefault(false)
+                    quiescent = runCatching { stopAndAwait(conversation.id, submittedCommandId) }.getOrDefault(false)
                 }
                 if (quiescent) {
                     executionProfileRegistry.remove(conversation.id, profile.runId)
@@ -376,8 +378,8 @@ class SubAgentEngine(
         }
     }
 
-    private suspend fun stopAndAwait(conversationId: Uuid): Boolean = runCatching {
-        chatService.stopAndAwaitQuiescence(conversationId, null, STOP_SETTLE_TIMEOUT_MS)
+    private suspend fun stopAndAwait(conversationId: Uuid, commandId: Uuid?): Boolean = runCatching {
+        chatService.stopAndAwaitQuiescence(conversationId, commandId, STOP_SETTLE_TIMEOUT_MS)
     }.getOrDefault(false)
 
     private fun CommandOutcome.failureDescription(): String = when (this) {
