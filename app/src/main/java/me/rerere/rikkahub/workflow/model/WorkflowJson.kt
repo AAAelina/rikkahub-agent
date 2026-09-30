@@ -546,7 +546,7 @@ object WorkflowJson {
             ?.takeIf(String::isNotBlank)
         if (origin == WorkflowOrigin.LEARNED && authoritySubjectId != null) {
             val valid = runCatching {
-                me.rerere.rikkahub.learning.model.LearningScope.AuthoritySubject(
+                me.rerere.rikkahub.data.scope.AgentScope.AuthoritySubject(
                     authoritySubjectId,
                 )
             }.isSuccess

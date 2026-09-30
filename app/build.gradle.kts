@@ -140,22 +140,6 @@ android {
         // the check.
         disable.add("FullBackupContent")
     }
-    testOptions {
-        managedDevices {
-            localDevices {
-                // Disposable emulator-only P5 Room/FTS/migration/process-recovery gate.
-                // Configuration and source compilation do not download the image. Running the
-                // generated task may download it and must never be replaced with connected tests
-                // against the user's Honor AAK-AN00 primary phone.
-                create("p5DisposablePixel6Api35") {
-                    device = "Pixel 6"
-                    apiLevel = 35
-                    systemImageSource = "aosp-atd"
-                    testedAbi = "x86_64"
-                }
-            }
-        }
-    }
     tasks.withType<KotlinCompile>().configureEach {
         compilerOptions.optIn.add("androidx.compose.material3.ExperimentalMaterial3Api")
         compilerOptions.optIn.add("androidx.compose.material3.ExperimentalMaterial3ExpressiveApi")
@@ -181,64 +165,6 @@ composeCompiler {
 tasks.register("buildAll") {
     dependsOn("assembleRelease", "bundleRelease")
     description = "Build both APK and AAB"
-}
-
-tasks.register("compileP5ManagedDeviceVerificationSources") {
-    group = "verification"
-    description = "Compile P5 disposable-emulator test sources without downloading/running a GMD or assembling a final APK"
-    dependsOn("compileDebugAndroidTestKotlin")
-}
-
-tasks.register("p5DisposableManagedDeviceInstructions") {
-    group = "verification"
-    description = "Print the explicit disposable-emulator P5 test entry; never targets connected/Honor devices"
-    doLast {
-        logger.lifecycle("Disposable emulator task: p5DisposablePixel6Api35DebugAndroidTest")
-        logger.lifecycle(
-            "Host artifact: build/outputs/managed_device_android_test_additional_output/" +
-                "debug/p5DisposablePixel6Api35/p5-production-eval-redacted.txt",
-        )
-        logger.lifecycle("Honor AAK-AN00 / connectedAndroidTest: PROHIBITED")
-    }
-}
-
-// Dedicated JVM gate: it compiles/tests the fixed offline production-component adapters only.
-// It has no assemble/bundle/connected/GMD dependency and publishes one bounded redacted report.
-afterEvaluate {
-    // Compatibility entry for the original RED gate; these are now ordinary regression tests.
-    // This never starts Android or authorizes production cleanup.
-    tasks.register<Test>("restoreSettingsAuthorizationRedProbe") {
-        group = "verification"
-        description = "Verify R3 persisted settings cleanup authorization"
-        dependsOn("compileDebugUnitTestKotlin", "processDebugUnitTestJavaRes")
-        val debugUnitTest = tasks.named<Test>("testDebugUnitTest")
-        testClassesDirs = debugUnitTest.get().testClassesDirs
-        classpath = debugUnitTest.get().classpath
-        filter.includeTestsMatching(
-            "me.rerere.rikkahub.learning.storage.restore.ColdRestoreSettingsAuthorizationRedProbeTest",
-        )
-    }
-    tasks.register<Test>("p5ProductionEvaluationGate") {
-        group = "verification"
-        description = "Run frozen P5 component regression and publish the fail-closed decision"
-        dependsOn("compileDebugUnitTestKotlin", "processDebugUnitTestJavaRes")
-        val debugUnitTest = tasks.named<Test>("testDebugUnitTest")
-        testClassesDirs = debugUnitTest.get().testClassesDirs
-        classpath = debugUnitTest.get().classpath
-        filter {
-            includeTestsMatching(
-                "me.rerere.rikkahub.learning.eval.ProductionLearningEvaluationCiTest",
-            )
-        }
-        maxParallelForks = 1
-        maxHeapSize = "192m"
-        jvmArgs("-XX:+UseSerialGC")
-        val redactedOutput = layout.buildDirectory.file(
-            "reports/agent-learning/p5-production-eval-redacted.txt",
-        )
-        outputs.file(redactedOutput)
-        systemProperty("rikkahub.p5.eval.output", redactedOutput.get().asFile.absolutePath)
-    }
 }
 
 tasks.withType<Test>().configureEach {

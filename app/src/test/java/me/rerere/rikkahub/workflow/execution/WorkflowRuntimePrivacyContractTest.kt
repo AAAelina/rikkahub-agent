@@ -43,42 +43,15 @@ class WorkflowRuntimePrivacyContractTest {
     }
 
     @Test
-    fun `learned execution snapshot carries and attests installed definition`() {
+    fun `learned row fails closed before tool execution when no authority validator exists`() {
         val engine = projectFile(
             "src/main/java/me/rerere/rikkahub/workflow/execution/WorkflowEngine.kt",
         ).readText()
-        val validator = projectFile(
-            "src/main/java/me/rerere/rikkahub/learning/promotion/ProductionLearnedWorkflowAuthorityValidator.kt",
-        ).readText()
-        assertTrue(engine.contains("val installedDefinition: WorkflowDefinition"))
-        assertTrue(engine.contains("installedDefinition = def"))
-        assertTrue(validator.contains("candidate.matchesInstalled(snapshot)"))
-        assertTrue(validator.contains("recomputedArtifact != artifactSha256"))
-        assertTrue(validator.contains("snapshot.installedDefinition == expectedInstalled"))
-    }
 
-    @Test
-    fun `enabled learned row still fails before tool execution when source authority is stale`() {
-        val engine = projectFile(
-            "src/main/java/me/rerere/rikkahub/workflow/execution/WorkflowEngine.kt",
-        ).readText()
-        val validator = projectFile(
-            "src/main/java/me/rerere/rikkahub/learning/promotion/ProductionLearnedWorkflowAuthorityValidator.kt",
-        ).readText()
-        val facade = projectFile(
-            "src/main/java/me/rerere/rikkahub/learning/runtime/LearningRuntimeFacade.kt",
-        ).readText()
-        val invalidation = projectFile(
-            "src/main/java/me/rerere/rikkahub/learning/jobs/P1LearningJobOutputs.kt",
-        ).readText()
-
-        assertTrue(validator.contains("sourceAuthority.isCurrentFailClosed(candidate)"))
-        assertTrue(facade.contains("countBlockingSourceInvalidationJobs"))
-        assertTrue(facade.contains("reader.inspect() == before"))
-        assertTrue(invalidation.contains("LearnedWorkflowCandidateState.STALE_SOURCE.name"))
-        assertTrue(invalidation.contains("LearnedWorkflowCandidateRevisionReason.SOURCE_INVALIDATED"))
-
-        val authorityCheck = engine.indexOf("learnedAuthorityValidator?.isActive(authority)")
+        // Learning was removed, so no validator is registered and every learned row must be
+        // disabled as stale before any tool is resolved.
+        assertTrue(engine.contains("getOrNull<LearnedWorkflowAuthorityValidator>()"))
+        val authorityCheck = engine.indexOf("learnedAuthorityValidator?.isActive(authority) == true")
         val disable = engine.indexOf("repository.disableLearnedAsStale", authorityCheck)
         val toolResolution = engine.indexOf("val settings = settingsStore.settingsFlow.first()", disable)
         assertTrue(authorityCheck >= 0 && disable > authorityCheck && toolResolution > disable)

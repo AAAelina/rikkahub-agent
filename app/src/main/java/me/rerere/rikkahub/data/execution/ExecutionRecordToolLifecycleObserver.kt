@@ -8,8 +8,8 @@ import me.rerere.rikkahub.data.ai.tools.ToolTerminationState
 import me.rerere.rikkahub.data.capability.ResourceScope
 import me.rerere.rikkahub.data.capability.SubjectType
 import me.rerere.rikkahub.data.capability.ToolCapabilityResolver
-import me.rerere.rikkahub.learning.model.LearningCanonicalId
-import me.rerere.rikkahub.learning.model.LearningScope
+import me.rerere.rikkahub.data.scope.CanonicalId
+import me.rerere.rikkahub.data.scope.AgentScope
 import kotlin.uuid.Uuid
 
 /**
@@ -232,11 +232,11 @@ class ExecutionRecordCriticalToolLifecycleSink(
 
 }
 
-internal fun RedactedToolCallContext.toLearningScope(): LearningScope =
+internal fun RedactedToolCallContext.toLearningScope(): AgentScope =
     if (subjectType == SubjectType.LOCAL_SECOND_USER) {
-        LearningScope.AuthoritySubject(subjectId)
+        AgentScope.AuthoritySubject(subjectId)
     } else {
-        LearningScope.Assistant(Uuid.parse(assistantId))
+        AgentScope.Assistant(Uuid.parse(assistantId))
     }
 
 internal data class TimedOutExecutionDecision(
@@ -269,7 +269,7 @@ object ExecutionRecordIds {
         return if (canonicalRun && legacy.length <= MAX_EXECUTION_ID_CHARS) {
             legacy
         } else {
-            "tool-v2:" + LearningCanonicalId.digest(
+            "tool-v2:" + CanonicalId.digest(
                 domainVersion = "execution-tool-record-v2",
                 fields = listOf(runId, toolCallId),
             )
@@ -284,7 +284,7 @@ object ExecutionRecordIds {
         return if (canonicalRun && legacy.length <= MAX_IDEMPOTENCY_CHARS) {
             legacy
         } else {
-            "tool-idempotency-v2:" + LearningCanonicalId.digest(
+            "tool-idempotency-v2:" + CanonicalId.digest(
                 domainVersion = "execution-tool-idempotency-v2",
                 fields = listOf(runId, toolCallId),
             )
@@ -312,7 +312,7 @@ object ExecutionRecordIds {
         return if (canonicalRun && unambiguousToolCall && legacy.length <= MAX_MUTATION_ID_CHARS) {
             legacy
         } else {
-            "tool-event-v2:" + LearningCanonicalId.digest(
+            "tool-event-v2:" + CanonicalId.digest(
                 domainVersion = "execution-tool-event-v2",
                 fields = listOf(runId, toolCallId, phase, executionId),
             )

@@ -327,58 +327,6 @@ internal fun AssistantBasicContent(
             HorizontalDivider()
             FormItem(
                 modifier = Modifier.padding(8.dp),
-                label = { Text(stringResource(R.string.assistant_learning_capture)) },
-                description = { Text(stringResource(R.string.assistant_learning_capture_desc)) },
-                tail = {
-                    Switch(
-                        checked = assistant.learningCaptureEnabled,
-                        onCheckedChange = { enabled ->
-                            onUpdate(assistant.copy(learningCaptureEnabled = enabled))
-                        },
-                    )
-                },
-            )
-            HorizontalDivider()
-            FormItem(
-                modifier = Modifier.padding(8.dp),
-                label = { Text(stringResource(R.string.assistant_authority_learning_capture)) },
-                description = {
-                    Text(stringResource(R.string.assistant_authority_learning_capture_desc))
-                },
-                tail = {
-                    Switch(
-                        checked = assistant.authoritySubjectLearningCaptureEnabled,
-                        onCheckedChange = { enabled ->
-                            onUpdate(
-                                assistant.copy(
-                                    authoritySubjectLearningCaptureEnabled = enabled,
-                                ),
-                            )
-                        },
-                    )
-                },
-            )
-            HorizontalDivider()
-            FormItem(
-                modifier = Modifier.padding(8.dp),
-                label = {
-                    Text(stringResource(R.string.assistant_reviewed_policy_injection))
-                },
-                description = {
-                    Text(stringResource(R.string.assistant_reviewed_policy_injection_desc))
-                },
-                tail = {
-                    Switch(
-                        checked = assistant.reviewedPolicyInjectionEnabled,
-                        onCheckedChange = { enabled ->
-                            onUpdate(assistant.copy(reviewedPolicyInjectionEnabled = enabled))
-                        },
-                    )
-                },
-            )
-            HorizontalDivider()
-            FormItem(
-                modifier = Modifier.padding(8.dp),
                 label = {
                     Text(stringResource(R.string.assistant_page_temperature))
                 },

@@ -20,11 +20,6 @@ data class SecondUserRevocationSummary(
     val invalidatedApprovals: Int,
     val revokedGrants: Int,
     val cancellationAttempts: Int,
-    val revokedPolicyGrants: Int = 0,
-    val stalePolicies: Int = 0,
-    val staleWorkflowCandidates: Int = 0,
-    /** True means the durable authority record intentionally remains REVOKING. */
-    val learningAuthorityRevocationPending: Boolean = false,
 )
 
 /**
@@ -43,7 +38,6 @@ class SecondUserAuthorityRevocationCoordinator(
     private val chatService: ChatService,
     private val toolExperiences: ToolExperienceRepository,
     private val toolShortcuts: ToolShortcutRepository,
-    private val learningAuthorityRevocation: SecondUserLearningAuthorityRevocationSaga,
     private val nowMs: () -> Long = System::currentTimeMillis,
 ) {
     suspend fun resumeIfNeeded(): SecondUserRevocationSummary? {
@@ -61,13 +55,6 @@ class SecondUserAuthorityRevocationCoordinator(
         // never allowed to survive a revocation merely because it cannot match the new epoch.
         val legacySubjectId = "local_second_user:$assistantId:$conversationId"
         val revokedSubjects = setOf(subjectId, legacySubjectId)
-        val learningFence = SecondUserLearningAuthorityRevocationFence(
-            assistantId = assistantId,
-            conversationId = conversationId,
-            authorityEpoch = config.authorityEpoch,
-            frozenNowMs = nowMs().coerceAtLeast(config.updatedAtMs).coerceAtLeast(0L),
-        )
-
         // Stop is allowed while the authority is revoking. It is only a best-effort interruption;
         // managed children are independently driven through CancellationCoordinator below.
         runCatching { chatService.stopGeneration(conversationId) }
@@ -122,32 +109,12 @@ class SecondUserAuthorityRevocationCoordinator(
                 .onFailure { Log.w(TAG, "Unable to cancel revoked execution ${record.id}", it) }
         }
 
-        // AppDatabase grant revocation and LearningDatabase stale projections form a replayable
-        // cross-database saga. Never clear the only durable epoch fence while either side is
-        // unavailable: the next boot/user retry resumes the exact same old subject.
-        val learningSummary = when (
-            val learningResult = learningAuthorityRevocation.resume(learningFence)
-        ) {
-            is SecondUserLearningAuthorityRevocationResult.Completed -> learningResult.summary
-            SecondUserLearningAuthorityRevocationResult.Pending -> {
-                return SecondUserRevocationSummary(
-                    cancelledCommands = cancelledCommands,
-                    invalidatedApprovals = invalidatedApprovals,
-                    revokedGrants = revokedGrants,
-                    cancellationAttempts = cancellationAttempts,
-                    learningAuthorityRevocationPending = true,
-                )
-            }
-        }
         authority.completeUnassign()
         return SecondUserRevocationSummary(
             cancelledCommands = cancelledCommands,
             invalidatedApprovals = invalidatedApprovals,
             revokedGrants = revokedGrants,
             cancellationAttempts = cancellationAttempts,
-            revokedPolicyGrants = learningSummary.revokedGrantHeads,
-            stalePolicies = learningSummary.policiesMadeStale,
-            staleWorkflowCandidates = learningSummary.workflowCandidatesMadeStale,
         )
     }
 

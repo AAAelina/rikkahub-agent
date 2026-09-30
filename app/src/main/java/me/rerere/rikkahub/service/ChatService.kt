@@ -662,8 +662,6 @@ class ChatService(
         me.rerere.rikkahub.data.ai.tools.local.ReverseGeocodeProviderTestGateway,
     private val dreamReviewRepository:
         me.rerere.rikkahub.memory.dreaming.review.DreamReviewRepository,
-    private val learningForegroundRegistry:
-        me.rerere.rikkahub.learning.resources.LearningForegroundRegistry,
     private val commandAdmissionAuthority:
         me.rerere.rikkahub.data.authority.transaction.CommandAdmissionAuthorityCoordinator,
     private val commandAdmissionAuthorityAdapter:
@@ -1155,20 +1153,6 @@ class ChatService(
                         }
                     },
                     onRunJobChanged = { job -> session.attachRunJob(job) },
-                    onRunStarted = {
-                        learningForegroundRegistry.enter(
-                            me.rerere.rikkahub.learning.resources.LearningForegroundWorkKind
-                                .CONVERSATION_EXECUTION,
-                            kotlinx.coroutines.currentCoroutineContext()[Job],
-                        )
-                    },
-                    onPetRunStarted = {
-                        learningForegroundRegistry.enter(
-                            me.rerere.rikkahub.learning.resources.LearningForegroundWorkKind
-                                .PET_DIALOGUE,
-                            kotlinx.coroutines.currentCoroutineContext()[Job],
-                        )
-                    },
                     onPersistSteering = { note ->
                         val current = session.state.value
                         val updated = current.withSteeringAuditMessage(note)
@@ -3457,30 +3441,6 @@ class ChatService(
                     allMessages
                 }
             }
-            // Stage D needs the exact command authority even when the independently reviewed
-            // Stage-E injection opt-in is off. Merely attaching this content-free identity has no
-            // provider effect; GenerationHandler applies the separate Stage-D and Stage-E gates.
-            if (runControl != null && authoritativeCommandId != null) {
-                durableCommandQueue.findAuthorityRow(authoritativeCommandId)
-                    ?.let(me.rerere.rikkahub.service.chat.CommandLineageContext::fromAuthorityRowOrNull)
-                    ?.let lineage@ { lineage ->
-                        val branchAnchorRevision = lineage.branchAnchorMessageRevision
-                            ?: return@lineage
-                        val scope = privilegeContext.authoritySubjectId?.let { subjectId ->
-                            me.rerere.rikkahub.learning.model.LearningScope.AuthoritySubject(subjectId)
-                        } ?: me.rerere.rikkahub.learning.model.LearningScope.Assistant(assistant.id)
-                        runControl.attachPolicyLearningContext(
-                            me.rerere.rikkahub.learning.exposure.PolicyLearningCommandContext(
-                                scope = scope,
-                                consumingAssistantId = assistant.id,
-                                lineageId = lineage.lineageId,
-                                branchAnchorMessageId = lineage.branchAnchorMessageId,
-                                branchAnchorMessageRevision = branchAnchorRevision,
-                                logicalRunId = runControl.runId,
-                            ),
-                        )
-                    }
-            }
             var memoryRetrievalTraceId: String? = null
             val generationMemories = if (!assistant.enableMemory) {
                 emptyList()
@@ -4603,10 +4563,6 @@ class ChatService(
         targetTokens: Int,
         keepRecentMessages: Int = 32
     ): Result<Unit> {
-        val foregroundLease = learningForegroundRegistry.enter(
-            me.rerere.rikkahub.learning.resources.LearningForegroundWorkKind.MANUAL_COMPRESSION,
-            kotlinx.coroutines.currentCoroutineContext()[Job],
-        )
         return try {
         require(targetTokens in 100..32_000) { "Compression target must be between 100 and 32,000 tokens." }
         require(keepRecentMessages >= 0) { "Messages to keep cannot be negative." }
@@ -4687,8 +4643,6 @@ class ChatService(
             throw cancelled
         } catch (error: Throwable) {
             Result.failure(error)
-        } finally {
-            runCatching { foregroundLease.close() }
         }
     }
 

@@ -105,12 +105,6 @@ import me.rerere.rikkahub.ui.pages.favorite.FavoritePage
 import me.rerere.rikkahub.ui.pages.history.HistoryPage
 import me.rerere.rikkahub.ui.pages.imggen.ImageGenPage
 import me.rerere.rikkahub.ui.pages.log.LogPage
-import me.rerere.rikkahub.ui.pages.learning.LearningCenterPage
-import me.rerere.rikkahub.ui.pages.learning.LearningPolicyDetailPage
-import me.rerere.rikkahub.ui.pages.learning.curator.CuratorReviewDetailPage
-import me.rerere.rikkahub.ui.pages.learning.curator.CuratorReviewListPage
-import me.rerere.rikkahub.ui.pages.learning.workflow.WorkflowReviewDetailPage
-import me.rerere.rikkahub.ui.pages.learning.workflow.WorkflowReviewListPage
 import me.rerere.rikkahub.ui.pages.search.SearchPage
 import me.rerere.rikkahub.ui.pages.setting.SettingAboutPage
 import me.rerere.rikkahub.ui.pages.setting.SettingAccessibilityPage
@@ -504,39 +498,6 @@ class RouteActivity : ComponentActivity() {
                                 AssistantMemoryPage(key.id)
                             }
 
-                            entry<Screen.LearningCenter> { key ->
-                                LearningCenterPage(key.assistantId)
-                            }
-
-                            entry<Screen.LearningPolicyDetail> { key ->
-                                LearningPolicyDetailPage(
-                                    assistantId = key.assistantId,
-                                    policyId = key.policyId,
-                                )
-                            }
-
-                            entry<Screen.LearningWorkflowReview> { key ->
-                                WorkflowReviewListPage(key.assistantId)
-                            }
-
-                            entry<Screen.LearningCuratorReview> { key ->
-                                CuratorReviewListPage(key.assistantId)
-                            }
-
-                            entry<Screen.LearningCuratorDetail> { key ->
-                                CuratorReviewDetailPage(
-                                    assistantId = key.assistantId,
-                                    candidateId = key.candidateId,
-                                )
-                            }
-
-                            entry<Screen.LearningWorkflowDetail> { key ->
-                                WorkflowReviewDetailPage(
-                                    assistantId = key.assistantId,
-                                    candidateId = key.candidateId,
-                                )
-                            }
-
                             entry<Screen.AssistantRequest> { key ->
                                 AssistantRequestPage(key.id)
                             }
@@ -865,33 +826,6 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data class AssistantMemory(val id: String) : Screen
-
-    @Serializable
-    data class LearningCenter(val assistantId: String) : Screen
-
-    @Serializable
-    data class LearningPolicyDetail(
-        val assistantId: String,
-        val policyId: String,
-    ) : Screen
-
-    @Serializable
-    data class LearningWorkflowReview(val assistantId: String) : Screen
-
-    @Serializable
-    data class LearningCuratorReview(val assistantId: String) : Screen
-
-    @Serializable
-    data class LearningCuratorDetail(
-        val assistantId: String,
-        val candidateId: String,
-    ) : Screen
-
-    @Serializable
-    data class LearningWorkflowDetail(
-        val assistantId: String,
-        val candidateId: String,
-    ) : Screen
 
     @Serializable
     data class AssistantRequest(val id: String) : Screen

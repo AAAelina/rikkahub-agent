@@ -48,13 +48,8 @@ import me.rerere.rikkahub.display.DisplayAutomationRuntime
 import me.rerere.rikkahub.display.DisplaySessionLifecycle
 import me.rerere.rikkahub.execution.ManagedExecutionCoordinator
 import me.rerere.rikkahub.execution.ManagedExecutionRequest
-import me.rerere.rikkahub.data.ai.background.BackgroundAuthorizationCandidate
 import me.rerere.rikkahub.plugin.InstalledPluginRecord
 import me.rerere.rikkahub.plugin.PluginReviewStatus
-import me.rerere.rikkahub.learning.model.LearningRolloutPolicy
-import me.rerere.rikkahub.learning.model.LearningRolloutStage
-import me.rerere.rikkahub.learning.model.LearningCuratorOperation
-import me.rerere.rikkahub.learning.model.LearningRetentionPresetV1
 import me.rerere.rikkahub.ui.components.nav.BackButton
 import me.rerere.rikkahub.ui.context.LocalNavController
 import org.koin.androidx.compose.koinViewModel
@@ -68,8 +63,6 @@ fun SettingAgentRuntimePage(
     val plugins by vm.plugins.collectAsState()
     val busy by vm.busy.collectAsState()
     val notice by vm.notice.collectAsState()
-    val learningNotice by vm.learningNotice.collectAsState()
-    val learningModels by vm.learningModelCandidates.collectAsState()
     val managedCoordinator = koinInject<ManagedExecutionCoordinator>()
     val displayRuntime = koinInject<DisplayAutomationRuntime>()
     val database = koinInject<me.rerere.rikkahub.data.db.AppDatabase>()
@@ -83,39 +76,10 @@ fun SettingAgentRuntimePage(
     val scope = rememberCoroutineScope()
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     var confirmStopManaged by remember { mutableStateOf(false) }
-    var selectedLearningModel by remember {
-        mutableStateOf<BackgroundAuthorizationCandidate?>(null)
-    }
-    var pendingRemoteLearningStage by remember {
-        mutableStateOf<Pair<LearningRolloutStage, BackgroundAuthorizationCandidate>?>(null)
-    }
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri -> uri?.let(vm::install) }
     val assistant = settings.assistants.firstOrNull { it.id == settings.assistantId }
-    val currentLearningPreferences = settings.learningPreferences.failClosed()
-    val currentLearningStage = LearningRolloutPolicy.stageOf(currentLearningPreferences)
-        ?: LearningRolloutStage.OFF
-
-    LaunchedEffect(
-        learningModels,
-        currentLearningPreferences.authorizedModelIdentityDigests,
-        currentLearningPreferences.remoteReflectionProviderIdentityDigest,
-    ) {
-        val persisted = currentLearningPreferences.authorizedModelIdentityDigests.singleOrNull()
-        selectedLearningModel = learningModels.singleOrNull { candidate ->
-            candidate.modelIdentityDigest == persisted &&
-                (!candidate.isRemote || candidate.providerIdentityDigest ==
-                    currentLearningPreferences.remoteReflectionProviderIdentityDigest)
-        } ?: selectedLearningModel?.takeIf { selected ->
-            learningModels.any { candidate ->
-                candidate.kind == selected.kind &&
-                    candidate.providerIdentityDigest == selected.providerIdentityDigest &&
-                    candidate.modelIdentityDigest == selected.modelIdentityDigest
-            }
-        } ?: learningModels.singleOrNull()
-    }
-
     if (confirmStopManaged) {
         AlertDialog(
             onDismissRequest = { confirmStopManaged = false },
@@ -132,52 +96,6 @@ fun SettingAgentRuntimePage(
             dismissButton = {
                 TextButton(onClick = { confirmStopManaged = false }) {
                     Text(stringResource(android.R.string.cancel))
-                }
-            },
-        )
-    }
-
-    pendingRemoteLearningStage?.let { (stage, target) ->
-        AlertDialog(
-            onDismissRequest = { pendingRemoteLearningStage = null },
-            title = {
-                Text(stringResource(R.string.agent_learning_remote_reflection_disclosure_title))
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(stringResource(R.string.agent_learning_remote_reflection_disclosure_summary))
-                    Text(
-                        stringResource(
-                            R.string.agent_learning_remote_reflection_disclosure_provider,
-                            target.providerLabel,
-                            target.providerIdentityDigest,
-                        ),
-                    )
-                    Text(
-                        stringResource(
-                            R.string.agent_learning_remote_reflection_disclosure_model,
-                            target.modelLabel,
-                            target.modelIdentityDigest,
-                        ),
-                    )
-                    Text(stringResource(R.string.agent_learning_remote_reflection_disclosure_fields))
-                    Text(stringResource(R.string.agent_learning_remote_reflection_disclosure_limits))
-                    Text(stringResource(R.string.agent_learning_remote_reflection_disclosure_scope))
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        pendingRemoteLearningStage = null
-                        vm.setLearningStage(stage, target)
-                    },
-                ) {
-                    Text(stringResource(R.string.agent_learning_remote_reflection_disclosure_confirm))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingRemoteLearningStage = null }) {
-                    Text(stringResource(R.string.cancel))
                 }
             },
         )
@@ -249,210 +167,6 @@ fun SettingAgentRuntimePage(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(stringResource(R.string.second_user_vault_title))
-                    }
-                }
-            }
-
-            item("agent-learning-shadow") {
-                RuntimeSectionCard(
-                    title = stringResource(R.string.agent_learning_section_title),
-                    description = stringResource(R.string.agent_learning_section_desc),
-                ) {
-                    Text(
-                        text = stringResource(R.string.agent_learning_injection_disabled),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                    Text(
-                        text = stringResource(R.string.agent_learning_model),
-                        style = MaterialTheme.typography.labelLarge,
-                    )
-                    if (learningModels.isEmpty()) {
-                        Text(
-                            text = stringResource(R.string.agent_learning_no_eligible_model),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    } else {
-                        learningModels.forEach { candidate ->
-                            FilterChip(
-                                selected = selectedLearningModel?.let { selected ->
-                                    selected.kind == candidate.kind &&
-                                        selected.providerIdentityDigest ==
-                                        candidate.providerIdentityDigest &&
-                                        selected.modelIdentityDigest == candidate.modelIdentityDigest
-                                } == true,
-                                onClick = {
-                                    selectedLearningModel = candidate
-                                },
-                                label = { Text(candidate.displayLabel) },
-                            )
-                        }
-                    }
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        LearningRolloutStage.entries.forEach { stage ->
-                            val requiresModel = stage == LearningRolloutStage.CANDIDATE_SHADOW ||
-                                stage == LearningRolloutStage.RETRIEVAL_SHADOW ||
-                                stage == LearningRolloutStage.REVIEWED_POLICY_OPT_IN
-                            FilterChip(
-                                selected = currentLearningStage == stage,
-                                onClick = {
-                                    val candidate = selectedLearningModel.takeIf { requiresModel }
-                                    if (candidate?.isRemote == true) {
-                                        pendingRemoteLearningStage = stage to candidate
-                                    } else {
-                                        vm.setLearningStage(stage, candidate)
-                                    }
-                                },
-                                enabled = !requiresModel || selectedLearningModel != null,
-                                label = {
-                                    Text(
-                                        stringResource(
-                                            when (stage) {
-                                                LearningRolloutStage.OFF ->
-                                                    R.string.agent_learning_stage_off
-                                                LearningRolloutStage.CAPTURE ->
-                                                    R.string.agent_learning_stage_capture
-                                                LearningRolloutStage.CANDIDATE_SHADOW ->
-                                                    R.string.agent_learning_stage_candidate_shadow
-                                                LearningRolloutStage.RETRIEVAL_SHADOW ->
-                                                    R.string.agent_learning_stage_retrieval_shadow
-                                                LearningRolloutStage.REVIEWED_POLICY_OPT_IN ->
-                                                    R.string.agent_learning_stage_reviewed_policy_opt_in
-                                            },
-                                        ),
-                                    )
-                                },
-                            )
-                        }
-                    }
-                    HorizontalDivider()
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                stringResource(R.string.agent_learning_workflow_candidate),
-                                fontWeight = FontWeight.Medium,
-                            )
-                            Text(
-                                stringResource(R.string.agent_learning_workflow_candidate_desc),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = currentLearningPreferences.workflowCandidate,
-                            onCheckedChange = vm::setWorkflowCandidateEnabled,
-                            enabled = currentLearningPreferences.policyInjection,
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                stringResource(R.string.agent_learning_workflow_promotion),
-                                fontWeight = FontWeight.Medium,
-                            )
-                            Text(
-                                stringResource(R.string.agent_learning_workflow_promotion_desc),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = currentLearningPreferences.workflowPromotion,
-                            onCheckedChange = vm::setWorkflowPromotionEnabled,
-                            enabled = currentLearningPreferences.workflowCandidate,
-                        )
-                    }
-                    HorizontalDivider()
-                    Text(
-                        stringResource(R.string.agent_learning_curator_operations),
-                        fontWeight = FontWeight.Medium,
-                    )
-                    Text(
-                        stringResource(R.string.agent_learning_curator_operations_desc),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    listOf(
-                        Triple(
-                            LearningCuratorOperation.UPDATE,
-                            R.string.agent_learning_curator_update,
-                            currentLearningPreferences.curatorUpdate,
-                        ),
-                        Triple(
-                            LearningCuratorOperation.MERGE,
-                            R.string.agent_learning_curator_merge,
-                            currentLearningPreferences.curatorMerge,
-                        ),
-                        Triple(
-                            LearningCuratorOperation.SPLIT,
-                            R.string.agent_learning_curator_split,
-                            currentLearningPreferences.curatorSplit,
-                        ),
-                        Triple(
-                            LearningCuratorOperation.SUPERSEDE,
-                            R.string.agent_learning_curator_supersede,
-                            currentLearningPreferences.curatorSupersede,
-                        ),
-                    ).forEach { (operation, label, checked) ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(stringResource(label), modifier = Modifier.weight(1f))
-                            Switch(
-                                checked = checked,
-                                onCheckedChange = {
-                                    vm.setCuratorOperationEnabled(operation, it)
-                                },
-                                enabled = currentLearningPreferences.policyInjection,
-                            )
-                        }
-                    }
-                    HorizontalDivider()
-                    RetentionPresetRow(
-                        title = stringResource(R.string.agent_learning_trace_retention),
-                        selected = currentLearningPreferences.retention.tracePreset,
-                        onSelect = vm::setTraceRetention,
-                    )
-                    RetentionPresetRow(
-                        title = stringResource(R.string.agent_learning_reward_retention),
-                        selected = currentLearningPreferences.retention.rewardPreset,
-                        onSelect = vm::setRewardRetention,
-                    )
-                    learningNotice?.let { resultCode ->
-                        TextButton(onClick = vm::clearLearningNotice) {
-                            Text(
-                                stringResource(
-                                    if (resultCode in LearningRolloutStage.entries.map {
-                                            "learning_rollout_${it.name.lowercase()}"
-                                        } + LearningCuratorOperation.entries.map {
-                                            "learning_curator_${it.name.lowercase()}_updated"
-                                        } + setOf(
-                                            "learning_remote_reflection_updated",
-                                            "learning_retention_updated",
-                                            "learning_workflow_candidate_updated",
-                                            "learning_workflow_promotion_updated",
-                                        )) {
-                                        R.string.agent_learning_change_applied
-                                    } else {
-                                        R.string.agent_learning_change_rejected
-                                    },
-                                ),
-                            )
-                        }
                     }
                 }
             }
@@ -679,39 +393,6 @@ fun SettingAgentRuntimePage(
                 ) {
                     Text(stringResource(R.string.agent_runtime_open_diagnostics))
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun RetentionPresetRow(
-    title: String,
-    selected: LearningRetentionPresetV1,
-    onSelect: (LearningRetentionPresetV1) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(title, fontWeight = FontWeight.Medium)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            LearningRetentionPresetV1.entries.forEach { preset ->
-                FilterChip(
-                    selected = selected == preset,
-                    onClick = { onSelect(preset) },
-                    label = {
-                        Text(
-                            stringResource(
-                                when (preset) {
-                                    LearningRetentionPresetV1.MINIMAL ->
-                                        R.string.agent_learning_retention_minimal
-                                    LearningRetentionPresetV1.STANDARD ->
-                                        R.string.agent_learning_retention_standard
-                                    LearningRetentionPresetV1.EXTENDED ->
-                                        R.string.agent_learning_retention_extended
-                                },
-                            ),
-                        )
-                    },
-                )
             }
         }
     }

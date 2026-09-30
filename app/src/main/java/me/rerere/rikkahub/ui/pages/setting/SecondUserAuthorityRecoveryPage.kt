@@ -184,10 +184,8 @@ fun SecondUserAuthorityRecoveryPage(
                                 onClick = {
                                     runStrong { authorization ->
                                         authority.beginRevocation(authorization)
-                                        val summary = revocation.resumeIfNeeded()
-                                        if (summary?.learningAuthorityRevocationPending != true) {
-                                            navigator.clearAndNavigate(Screen.Assistant)
-                                        }
+                                        revocation.resumeIfNeeded()
+                                        navigator.clearAndNavigate(Screen.Assistant)
                                     }
                                 },
                             ) {
@@ -247,10 +245,7 @@ fun SecondUserAuthorityRecoveryPage(
                                         val current = authority.currentConfig()
                                         if (current.state != SecondUserAuthorityState.UNCONFIGURED) {
                                             authority.beginRevocation(authorization)
-                                            val summary = revocation.resumeIfNeeded()
-                                            if (summary?.learningAuthorityRevocationPending == true) {
-                                                return@runStrong
-                                            }
+                                            revocation.resumeIfNeeded()
                                         }
                                         // Revocation may include a real process stop and take
                                         // longer than a short-lived biometric grant. Re-auth

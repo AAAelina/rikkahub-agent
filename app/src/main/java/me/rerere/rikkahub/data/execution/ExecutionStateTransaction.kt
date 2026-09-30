@@ -1,21 +1,7 @@
 package me.rerere.rikkahub.data.execution
 
 import androidx.room.withTransaction
-import kotlinx.coroutines.CancellationException
 import me.rerere.rikkahub.data.db.AppDatabase
-import me.rerere.rikkahub.learning.handoff.LearningOutboxAppender
-import me.rerere.rikkahub.learning.handoff.LearningOutboxAppendResult
-import me.rerere.rikkahub.learning.handoff.LearningOutboxDraft
-import me.rerere.rikkahub.learning.model.DisabledLearningFeatureFlagSource
-import me.rerere.rikkahub.learning.model.DisabledLearningScopeConsentSource
-import me.rerere.rikkahub.learning.model.LearningScopeConsentSource
-import me.rerere.rikkahub.learning.model.LearningCanonicalId
-import me.rerere.rikkahub.learning.model.LearningCorrelation
-import me.rerere.rikkahub.learning.model.LearningEventCode
-import me.rerere.rikkahub.learning.model.LearningEventType
-import me.rerere.rikkahub.learning.model.LearningFeatureFlagSource
-import me.rerere.rikkahub.learning.model.LearningSourceKind
-import me.rerere.rikkahub.learning.model.LearningSourceRef
 
 data class ExecutionMutation(
     val executionId: String,
@@ -119,13 +105,6 @@ class ExecutionStateTransaction(
     private val eventDao: ExecutionEventDao,
     private val nowMs: () -> Long = System::currentTimeMillis,
     private val metrics: ExecutionConsistencyMetrics? = null,
-    private val learningOutboxAppender: LearningOutboxAppender? = null,
-    private val learningFeatureFlags: LearningFeatureFlagSource =
-        DisabledLearningFeatureFlagSource,
-    private val learningScopeConsent: LearningScopeConsentSource =
-        DisabledLearningScopeConsentSource,
-    /** Best-effort scheduling hook invoked only after an outbox-bearing transaction commits. */
-    private val learningPostCommitWake: () -> Unit = {},
 ) {
     suspend fun open(
         draft: ExecutionRecordDraft,
@@ -213,7 +192,7 @@ class ExecutionStateTransaction(
             }
             return ExecutionMutationCommit(
                 result = ExecutionMutationResult.Duplicate(existing),
-                insertedOutbox = appendExecutionTerminalIfEnabled(existing, duplicateEvent),
+                insertedOutbox = false,
             )
         }
         if (existing.stateVersion != mutation.expectedVersion) {
@@ -223,7 +202,6 @@ class ExecutionStateTransaction(
                 insertedOutbox = false,
             )
         }
-        var insertedOutbox = false
         val result = when (val reduced = ExecutionMutationReducer.reduce(existing, mutation, nowMs())) {
             is ExecutionReduction.Invalid -> ExecutionMutationResult.Invalid(
                 reduced.current,
@@ -281,90 +259,16 @@ class ExecutionStateTransaction(
                         createdAtMs = next.updatedAtMs,
                     )
                     eventDao.insert(event)
-                    insertedOutbox = appendExecutionTerminalIfEnabled(next, event)
                 }
                 ExecutionMutationResult.Applied(next)
             }
         }
-        return ExecutionMutationCommit(result, insertedOutbox)
+        return ExecutionMutationCommit(result, insertedOutbox = false)
     }
 
     /** Dispatches a receipt only after the transaction that owns it has committed. */
-    fun dispatchExternalPostCommit(commit: ExecutionMutationCommit) {
-        if (commit.insertedOutbox) {
-            try {
-                learningPostCommitWake()
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                // The authority mutation and outbox row are already durable. Startup/periodic
-                // reconciliation is the recovery path when best-effort scheduling is unavailable.
-            }
-        }
-    }
-
-    private suspend fun appendExecutionTerminalIfEnabled(
-        record: ExecutionRecord,
-        event: ExecutionEventRecord,
-    ): Boolean {
-        val previousStatus = event.previousStatus?.let(::strictExecutionStatus) ?: return false
-        val nextStatus = strictExecutionStatus(event.nextStatus)
-        if (previousStatus.isTerminal || !nextStatus.isTerminal) return false
-        check(record.id == event.executionId && record.stateVersion == event.sequence) {
-            "execution_terminal_event_snapshot_mismatch"
-        }
-        check(
-            record.status == event.nextStatus &&
-                record.verificationState == event.nextVerification,
-        ) {
-            "execution_terminal_event_state_mismatch"
-        }
-
-        val flags = learningFeatureFlags.current()
-        if (!flags.isValid || !flags.effective.handoff) return false
-        val appender = checkNotNull(learningOutboxAppender) {
-            "learning_handoff_enabled_without_outbox_appender"
-        }
-        // Null/invalid scope is a legacy imported row. It remains ineligible; never infer a scope
-        // from a principal string at terminal time.
-        val scope = record.learningScopeOrNull() ?: return false
-        if (!learningScopeConsent.captureAllowed(scope)) return false
-        val toolIdentity = listOf(record.toolCallId, record.toolName, record.toolSchemaFingerprint)
-        val hasAnyToolIdentity = toolIdentity.any { it != null }
-        if (hasAnyToolIdentity &&
-            (toolIdentity.any { it == null } ||
-                record.owningAssistantMessageId == null ||
-                record.owningAssistantMessageRevision?.let { it > 0L } != true)
-        ) {
-            // The assistant checkpoint is bound later by the WAITING/final owning transaction.
-            // Reconciliation will deterministically emit schema-v2 after that exact pair exists.
-            return false
-        }
-        val eventSchemaVersion = if (hasAnyToolIdentity) 2 else 1
-        val appendResult = appender.appendInCurrentAuthorityTransaction { streamId ->
-            val sourceId = LearningCanonicalId.executionEventSourceId(event.eventId)
-            LearningOutboxDraft(
-                streamId = streamId,
-                eventCode = LearningEventCode(
-                    rawCode = LearningEventType.EXECUTION_TERMINAL.name,
-                    schemaVersion = eventSchemaVersion,
-                ),
-                source = LearningSourceRef(
-                    sourceKind = LearningSourceKind.EXECUTION_EVENT,
-                    sourceId = sourceId,
-                    sourceRevision = event.sequence,
-                    missingRevisionReason = null,
-                    databaseStreamId = streamId,
-                    scope = scope,
-                    occurredAtMs = event.createdAtMs,
-                ),
-                correlation = record.toLearningCorrelation(),
-                terminalStateCode = nextStatus.toLearningTerminalCode(),
-                createdAtMs = event.createdAtMs,
-            )
-        }
-        return appendResult is LearningOutboxAppendResult.Inserted
-    }
+    @Suppress("UNUSED_PARAMETER")
+    fun dispatchExternalPostCommit(commit: ExecutionMutationCommit) = Unit
 }
 
 /** Columns intentionally omitted here are mutable execution state updated by the CAS reducer. */
@@ -406,31 +310,4 @@ internal fun ExecutionEventRecord.hasSameJournalIdentityAs(
         reasonCode == mutation.reasonCode &&
         nextStatus == (mutation.targetStatus?.name ?: previousStatus) &&
         nextVerification == (mutation.verificationState?.name ?: previousVerification)
-}
-
-internal fun ExecutionRecord.toLearningCorrelation(): LearningCorrelation = LearningCorrelation(
-    conversationId = conversationId,
-    commandId = commandId,
-    generationRunId = traceId,
-    executionId = id,
-    toolCallId = toolCallId,
-    toolName = toolName,
-    toolSchemaFingerprint = toolSchemaFingerprint,
-    messageId = owningAssistantMessageId,
-    messageRevision = owningAssistantMessageRevision,
-)
-
-private fun strictExecutionStatus(value: String): ExecutionStatus =
-    checkNotNull(ExecutionStatus.entries.firstOrNull { it.name == value }) {
-        "invalid_execution_event_status"
-    }
-
-internal fun ExecutionStatus.toLearningTerminalCode(): String = when (this) {
-    ExecutionStatus.succeeded -> "SUCCEEDED"
-    ExecutionStatus.failed -> "FAILED"
-    ExecutionStatus.cancelled -> "CANCELLED"
-    ExecutionStatus.timed_out -> "TIMED_OUT"
-    ExecutionStatus.orphaned -> "ORPHANED"
-    ExecutionStatus.unknown -> "UNKNOWN"
-    else -> error("execution_status_is_not_terminal")
 }

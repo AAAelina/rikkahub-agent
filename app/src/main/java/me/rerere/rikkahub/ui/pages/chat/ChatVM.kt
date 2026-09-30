@@ -37,10 +37,6 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.isEmptyInputMessage
 import me.rerere.rikkahub.R
-import me.rerere.rikkahub.data.authority.reward.RewardFeedbackAuthorityRepository
-import me.rerere.rikkahub.data.authority.reward.RewardFeedbackVerdict
-import me.rerere.rikkahub.data.authority.reward.RewardFeedbackWriteResult
-import me.rerere.rikkahub.assistant.SecondUserAuthorityRegistry
 import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.datastore.getAssistantById
@@ -76,7 +72,6 @@ class ChatVM(
     val updateChecker: UpdateChecker,
     private val filesManager: FilesManager,
     private val favoriteRepository: FavoriteRepository,
-    private val rewardFeedbackAuthorityRepository: RewardFeedbackAuthorityRepository,
 ) : ViewModel() {
     private val assistantSelectionMutex = Mutex()
     private val assistantSelectionSequence = AtomicLong(0)
@@ -145,23 +140,6 @@ class ChatVM(
     val settings: StateFlow<Settings> =
         settingsStore.settingsFlow.stateIn(viewModelScope, SharingStarted.Eagerly, Settings.dummy())
 
-    /** UI visibility only; the repository repeats the exact command/source/scope gate in-transaction. */
-    val rewardFeedbackAvailable: StateFlow<Boolean> = combine(settings, conversation) {
-            current,
-            currentConversation,
-        ->
-        if (current.init) return@combine false
-        val preferences = current.learningPreferences.failClosed()
-        if (!preferences.capture || !preferences.jobs || !preferences.handoff) return@combine false
-        val exactAssistant = current.assistants.singleOrNull {
-            it.id == currentConversation.assistantId
-        } ?: return@combine false
-        if (exactAssistant.learningCaptureEnabled) return@combine true
-        val authority = SecondUserAuthorityRegistry.current() ?: return@combine false
-        authority.assistantId == exactAssistant.id &&
-            exactAssistant.authoritySubjectLearningCaptureEnabled
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, false)
-
     // 网络搜索
     val enableWebSearch = combine(settings, conversation) { settings, conversation ->
         val assistant = settings.getAssistantById(conversation.assistantId)
@@ -180,18 +158,6 @@ class ChatVM(
     fun dismissError(id: Uuid) = chatService.dismissError(id)
 
     fun clearAllErrors() = chatService.clearAllErrors()
-
-    suspend fun recordHelpfulFeedback(messageId: Uuid): RewardFeedbackWriteResult =
-        rewardFeedbackAuthorityRepository.record(
-            targetAssistantMessageId = messageId.toString(),
-            verdict = RewardFeedbackVerdict.HELPFUL,
-        )
-
-    suspend fun recordNotHelpfulFeedback(messageId: Uuid): RewardFeedbackWriteResult =
-        rewardFeedbackAuthorityRepository.record(
-            targetAssistantMessageId = messageId.toString(),
-            verdict = RewardFeedbackVerdict.NOT_HELPFUL,
-        )
 
     // 生成完成
     val generationDoneFlow: SharedFlow<Uuid> = chatService.generationDoneFlow
