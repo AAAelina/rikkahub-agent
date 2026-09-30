@@ -361,7 +361,7 @@
   <string name="assistant_page_template_variables_label">変数:</string>
   <string name="assistant_page_thinking_budget">思考バジェット</string>
   <string name="assistant_page_time_reminder">時間リマインダー</string>
-  <string name="assistant_page_time_reminder_desc">会話の間隔が大きいメッセージの前に自動で時刻リマインダーを挿入し、AIが会話の間隔を理解しやすくします</string>
+  <string name="assistant_page_time_reminder_desc">AI に送信するすべてのユーザーメッセージに、固定された送信時刻を付加します</string>
   <string name="assistant_page_title">アシスタント設定</string>
   <string name="assistant_page_top_p">Top P</string>
   <string name="assistant_page_top_p_value">Top P: %s</string>

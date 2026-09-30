@@ -1,22 +1,17 @@
 package me.rerere.rikkahub.data.ai.transformers
 
-import kotlin.time.Instant
-import kotlinx.datetime.TimeZone
-import kotlinx.datetime.toInstant
 import me.rerere.ai.core.MessageRole
 import me.rerere.ai.ui.UIMessage
-import me.rerere.rikkahub.utils.toLocalDateTime
-import java.time.ZoneId
-import java.time.format.TextStyle
-import java.util.Locale
-import kotlin.time.toJavaInstant
+import me.rerere.ai.ui.UIMessagePart
 
-private const val TIME_GAP_THRESHOLD_SECONDS = 3600L // 1 小时
+private const val MESSAGE_TIME_OPEN_TAG = "<message_time>"
 
 /**
- * 时间提醒注入转换器
+ * Adds the persisted send time to every user message in the provider-only projection.
  *
- * 在时间间隔较大的消息之前自动注入 <time_reminder>，帮助 AI 了解对话的时间间隔
+ * [UIMessage.createdAt] is deliberately used instead of the current clock: old message prefixes
+ * therefore remain byte-for-byte stable on later turns and stay eligible for provider caching.
+ * The stored conversation and the text rendered in the UI are not modified.
  */
 object TimeReminderTransformer : InputMessageTransformer {
     override suspend fun transform(
@@ -28,52 +23,22 @@ object TimeReminderTransformer : InputMessageTransformer {
     }
 }
 
-internal fun applyTimeReminder(messages: List<UIMessage>): List<UIMessage> {
-    val result = mutableListOf<UIMessage>()
-    val tz = TimeZone.currentSystemDefault()
-
-    var firstUserFound = false
-    for (i in messages.indices) {
-        val current = messages[i]
-        if (current.role == MessageRole.USER) {
-            val currInstant = current.createdAt.toInstant(tz)
-            if (!firstUserFound) {
-                firstUserFound = true
-                result.add(buildTimeReminderMessage(null, currInstant))
-            } else {
-                val previous = messages[i - 1]
-                val prevInstant = previous.createdAt.toInstant(tz)
-                val gapSeconds = (currInstant - prevInstant).inWholeSeconds
-
-                if (gapSeconds > TIME_GAP_THRESHOLD_SECONDS) {
-                    result.add(buildTimeReminderMessage(gapSeconds, currInstant))
-                }
-            }
-        }
-        result.add(current)
-    }
-
-    return result
-}
-
-private fun buildTimeReminderMessage(gapSeconds: Long?, instant: Instant): UIMessage {
-    val javaInstant = instant.toJavaInstant()
-    val dayOfWeek = javaInstant.atZone(ZoneId.systemDefault()).dayOfWeek
-        .getDisplayName(TextStyle.FULL, Locale.getDefault())
-    val timeStr = javaInstant.toLocalDateTime()
-    val content = if (gapSeconds != null) {
-        val gapText = formatGap(gapSeconds)
-        "<time_reminder>Current time: $dayOfWeek, $timeStr ($gapText since last message)</time_reminder>"
+internal fun applyTimeReminder(messages: List<UIMessage>): List<UIMessage> = messages.map { message ->
+    if (message.role != MessageRole.USER) {
+        message
     } else {
-        "<time_reminder>Current time: $dayOfWeek, $timeStr</time_reminder>"
+        message.appendStableTimeSuffix()
     }
-    return UIMessage.user(content)
 }
 
-private fun formatGap(seconds: Long): String {
+private fun UIMessage.appendStableTimeSuffix(): UIMessage {
+    val suffix = "${MESSAGE_TIME_OPEN_TAG}Sent at local time: $createdAt</message_time>"
+    val lastPart = parts.lastOrNull()
     return when {
-        seconds < 3600 -> "${seconds / 60} min"
-        seconds < 86400 -> "${seconds / 3600} h"
-        else -> "${seconds / 86400} d"
+        lastPart is UIMessagePart.Text && lastPart.text.endsWith(suffix) -> this
+        lastPart is UIMessagePart.Text -> copy(
+            parts = parts.dropLast(1) + lastPart.copy(text = "${lastPart.text}\n\n$suffix"),
+        )
+        else -> copy(parts = parts + UIMessagePart.Text(suffix))
     }
 }

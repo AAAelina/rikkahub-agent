@@ -351,7 +351,7 @@
   <string name="assistant_page_template_variables_label">المتغيرات:</string>
   <string name="assistant_page_thinking_budget">ميزانية التفكير</string>
   <string name="assistant_page_time_reminder">تذكير الوقت</string>
-  <string name="assistant_page_time_reminder_desc">حقن تذكيرات بالوقت تلقائيًا قبل الرسائل ذات الفجوات الزمنية الكبيرة لمساعدة الذكاء الاصطناعي على فهم الفترات بين المحادثات</string>
+  <string name="assistant_page_time_reminder_desc">إلحاق وقت إرسال ثابت بكل رسالة مستخدم تُرسل إلى الذكاء الاصطناعي</string>
   <string name="assistant_page_title">إعدادات المساعد</string>
   <string name="assistant_page_top_p">Top P</string>
   <string name="assistant_page_top_p_value">Top P: %s</string>

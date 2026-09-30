@@ -95,7 +95,7 @@ data class Assistant(
     val modeInjectionIds: Set<Uuid> = emptySet(),      // 关联的模式注入 ID
     val lorebookIds: Set<Uuid> = emptySet(),            // 关联的 Lorebook ID
     val enabledSkills: Set<String> = emptySet(),        // 启用的 skill 名称列表
-    val enableTimeReminder: Boolean = false,            // 时间间隔提醒注入
+    val enableTimeReminder: Boolean = false,            // 为用户消息附加稳定的发送时间
     // Phase 11 — Sub-agents settings. Defaults to "inherit from main" (null model id +
     // empty system prompt → built-in focused-sub-agent prompt). Each assistant has its
     // own concurrency cap; we hard-cap globally at 16 across all assistants in the engine.

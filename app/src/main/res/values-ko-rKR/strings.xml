@@ -361,7 +361,7 @@
   <string name="assistant_page_template_variables_label">변수:</string>
   <string name="assistant_page_thinking_budget">사고 예산</string>
   <string name="assistant_page_time_reminder">시간 알림</string>
-  <string name="assistant_page_time_reminder_desc">시간 간격이 큰 메시지 앞에 자동으로 시간 알림을 삽입하여 AI가 대화 간격을 이해할 수 있도록 도와줍니다</string>
+  <string name="assistant_page_time_reminder_desc">AI에 전송되는 모든 사용자 메시지에 고정된 전송 시간을 덧붙입니다</string>
   <string name="assistant_page_title">어시스턴트 설정</string>
   <string name="assistant_page_top_p">Top P</string>
   <string name="assistant_page_top_p_value">Top P: %s</string>

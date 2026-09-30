@@ -361,7 +361,7 @@
   <string name="assistant_page_template_variables_label">變數:</string>
   <string name="assistant_page_thinking_budget">思考預算</string>
   <string name="assistant_page_time_reminder">時間提醒</string>
-  <string name="assistant_page_time_reminder_desc">自動在時間間隔較大的訊息前插入時間提醒，幫助 AI 理解對話間隔</string>
+  <string name="assistant_page_time_reminder_desc">為傳送給 AI 的每則使用者訊息附加穩定的傳送時間</string>
   <string name="assistant_page_title">助手設定</string>
   <string name="assistant_page_top_p">Top P</string>
   <string name="assistant_page_top_p_value">Top P: %s</string>

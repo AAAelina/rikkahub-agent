@@ -6,131 +6,148 @@ import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * Coverage for [applyTimeReminder].
- *
- * Contract (since the f5336e69 behavior change): a `<time_reminder>` is injected
- * before the FIRST user message unconditionally (no "since last message" text),
- * and before any later user message whose gap from the previous message exceeds
- * 1 hour (with the gap spelled out). Non-user messages never get a reminder.
- */
 class TimeReminderTransformerTest {
 
-    private fun userMessage(text: String, createdAt: LocalDateTime) = UIMessage(
-        role = MessageRole.USER,
+    private fun message(
+        role: MessageRole,
+        text: String,
+        createdAt: LocalDateTime,
+    ) = UIMessage(
+        role = role,
         parts = listOf(UIMessagePart.Text(text)),
         createdAt = createdAt,
     )
 
-    private fun getMessageText(msg: UIMessage): String =
-        msg.parts.filterIsInstance<UIMessagePart.Text>().joinToString("") { it.text }
+    private fun text(message: UIMessage): String =
+        message.parts.filterIsInstance<UIMessagePart.Text>().joinToString("") { it.text }
 
     @Test
-    fun `single user message gets a reminder injected before it`() {
-        val messages = listOf(userMessage("Hello", LocalDateTime(2026, 2, 22, 10, 0, 0)))
-        val result = applyTimeReminder(messages)
-        // reminder + original message
-        assertEquals(2, result.size)
-        val injected = getMessageText(result[0])
-        assertTrue(injected.contains("<time_reminder>"))
-        // first-message reminder carries no gap text
-        assertFalse(injected.contains("since last message"))
-        assertEquals("Hello", getMessageText(result[1]))
-    }
-
-    @Test
-    fun `gap less than 1 hour injects only the first-message reminder`() {
-        val messages = listOf(
-            userMessage("Hello", LocalDateTime(2026, 2, 22, 10, 0, 0)),
-            userMessage("World", LocalDateTime(2026, 2, 22, 10, 30, 0)), // 30 min gap
+    fun `every user message gets its own persisted send time as a suffix`() {
+        val firstTime = LocalDateTime(2026, 2, 22, 10, 0, 0)
+        val secondTime = LocalDateTime(2026, 2, 22, 10, 1, 0)
+        val result = applyTimeReminder(
+            listOf(
+                message(MessageRole.USER, "Hello", firstTime),
+                message(MessageRole.ASSISTANT, "Hi", firstTime),
+                message(MessageRole.USER, "Again", secondTime),
+            ),
         )
-        val result = applyTimeReminder(messages)
-        // first-message reminder + Hello + World (no second reminder, gap < 1h)
+
         assertEquals(3, result.size)
-        assertTrue(getMessageText(result[0]).contains("<time_reminder>"))
-        assertEquals("Hello", getMessageText(result[1]))
-        assertEquals("World", getMessageText(result[2]))
+        assertEquals("Hello\n\n<message_time>Sent at local time: $firstTime</message_time>", text(result[0]))
+        assertEquals("Hi", text(result[1]))
+        assertEquals("Again\n\n<message_time>Sent at local time: $secondTime</message_time>", text(result[2]))
     }
 
     @Test
-    fun `gap exactly 1 hour injects only the first-message reminder`() {
-        val messages = listOf(
-            userMessage("Hello", LocalDateTime(2026, 2, 22, 10, 0, 0)),
-            userMessage("World", LocalDateTime(2026, 2, 22, 11, 0, 0)), // exactly 1 hour
+    fun `timestamp is appended even when messages are close together`() {
+        val firstTime = LocalDateTime(2026, 2, 22, 10, 0, 0)
+        val secondTime = LocalDateTime(2026, 2, 22, 10, 0, 1)
+        val result = applyTimeReminder(
+            listOf(
+                message(MessageRole.USER, "First", firstTime),
+                message(MessageRole.USER, "Second", secondTime),
+            ),
         )
-        val result = applyTimeReminder(messages)
-        // threshold is strict (> 3600s), so exactly 1h does not trigger
-        assertEquals(3, result.size)
-        assertTrue(getMessageText(result[0]).contains("<time_reminder>"))
-        assertEquals("Hello", getMessageText(result[1]))
-        assertEquals("World", getMessageText(result[2]))
+
+        assertTrue(text(result[0]).contains(firstTime.toString()))
+        assertTrue(text(result[1]).contains(secondTime.toString()))
     }
 
     @Test
-    fun `gap more than 1 hour injects a reminder before the second message`() {
-        val messages = listOf(
-            userMessage("Hello", LocalDateTime(2026, 2, 22, 10, 0, 0)),
-            userMessage("World", LocalDateTime(2026, 2, 22, 12, 0, 0)), // 2 hours
-        )
-        val result = applyTimeReminder(messages)
-        // first-message reminder + Hello + gap reminder + World
-        assertEquals(4, result.size)
-        assertTrue(getMessageText(result[0]).contains("<time_reminder>"))
-        assertEquals("Hello", getMessageText(result[1]))
-        val injected = getMessageText(result[2])
-        assertTrue(injected.contains("<time_reminder>"))
-        assertTrue(injected.contains("since last message"))
-        assertEquals("World", getMessageText(result[3]))
+    fun `non-user messages remain the same objects`() {
+        val time = LocalDateTime(2026, 2, 22, 10, 0, 0)
+        val system = message(MessageRole.SYSTEM, "System", time)
+        val assistant = message(MessageRole.ASSISTANT, "Assistant", time)
+
+        val result = applyTimeReminder(listOf(system, assistant))
+
+        assertSame(system, result[0])
+        assertSame(assistant, result[1])
     }
 
     @Test
-    fun `injected gap reminder contains day of week and gap in hours`() {
-        val messages = listOf(
-            userMessage("Hello", LocalDateTime(2026, 2, 22, 10, 0, 0)),
-            userMessage("World", LocalDateTime(2026, 2, 22, 12, 0, 0)), // 2 hours
+    fun `media-only user message gets a final text part`() {
+        val time = LocalDateTime(2026, 2, 22, 10, 0, 0)
+        val input = UIMessage(
+            role = MessageRole.USER,
+            parts = listOf(UIMessagePart.Image("https://example.com/image.png")),
+            createdAt = time,
         )
-        val result = applyTimeReminder(messages)
-        val injected = getMessageText(result[2])
-        // day-of-week and time are comma-separated
-        assertTrue(injected.contains(","))
-        assertTrue(injected.contains("2 h since last message"))
+
+        val result = applyTimeReminder(listOf(input)).single()
+
+        assertEquals(2, result.parts.size)
+        assertSame(input.parts[0], result.parts[0])
+        assertEquals(
+            "<message_time>Sent at local time: $time</message_time>",
+            (result.parts.last() as UIMessagePart.Text).text,
+        )
     }
 
     @Test
-    fun `gap in days formats correctly`() {
-        val messages = listOf(
-            userMessage("Hello", LocalDateTime(2026, 2, 20, 10, 0, 0)),
-            userMessage("World", LocalDateTime(2026, 2, 22, 10, 0, 0)), // 2 days
+    fun `transformation is idempotent`() {
+        val input = listOf(
+            message(
+                role = MessageRole.USER,
+                text = "Hello",
+                createdAt = LocalDateTime(2026, 2, 22, 10, 0, 0),
+            ),
         )
-        val result = applyTimeReminder(messages)
-        val injected = getMessageText(result[2])
-        assertTrue(injected.contains("2 d since last message"))
+
+        val once = applyTimeReminder(input)
+        val twice = applyTimeReminder(once)
+
+        assertEquals(once, twice)
+        assertEquals(1, Regex("<message_time>").findAll(text(twice.single())).count())
     }
 
     @Test
-    fun `multiple large gaps inject multiple reminders`() {
-        val messages = listOf(
-            userMessage("Msg 1", LocalDateTime(2026, 2, 20, 10, 0, 0)),
-            userMessage("Msg 2", LocalDateTime(2026, 2, 21, 10, 0, 0)), // 1 day
-            userMessage("Msg 3", LocalDateTime(2026, 2, 22, 10, 0, 0)), // 1 day
+    fun `adding a new turn leaves the transformed cache prefix unchanged`() {
+        val history = listOf(
+            message(
+                role = MessageRole.USER,
+                text = "First",
+                createdAt = LocalDateTime(2026, 2, 22, 10, 0, 0),
+            ),
+            message(
+                role = MessageRole.ASSISTANT,
+                text = "Answer",
+                createdAt = LocalDateTime(2026, 2, 22, 10, 0, 1),
+            ),
         )
-        val result = applyTimeReminder(messages)
-        // first-message reminder + Msg 1 + gap reminder + Msg 2 + gap reminder + Msg 3
-        assertEquals(6, result.size)
-        assertTrue(getMessageText(result[0]).contains("<time_reminder>"))
-        assertEquals("Msg 1", getMessageText(result[1]))
-        assertTrue(getMessageText(result[2]).contains("<time_reminder>"))
-        assertEquals("Msg 2", getMessageText(result[3]))
-        assertTrue(getMessageText(result[4]).contains("<time_reminder>"))
-        assertEquals("Msg 3", getMessageText(result[5]))
+        val nextTurn = message(
+            role = MessageRole.USER,
+            text = "Second",
+            createdAt = LocalDateTime(2026, 2, 22, 11, 0, 0),
+        )
+
+        val firstRequest = applyTimeReminder(history)
+        val secondRequest = applyTimeReminder(history + nextTurn)
+
+        assertEquals(firstRequest, secondRequest.take(firstRequest.size))
+    }
+
+    @Test
+    fun `stored input is not modified`() {
+        val input = message(
+            role = MessageRole.USER,
+            text = "Stored text",
+            createdAt = LocalDateTime(2026, 2, 22, 10, 0, 0),
+        )
+
+        val result = applyTimeReminder(listOf(input)).single()
+
+        assertEquals("Stored text", text(input))
+        assertFalse(input === result)
     }
 
     @Test
     fun `empty messages return empty`() {
-        val result = applyTimeReminder(emptyList())
-        assertEquals(0, result.size)
+        assertTrue(applyTimeReminder(emptyList()).isEmpty())
     }
 }
