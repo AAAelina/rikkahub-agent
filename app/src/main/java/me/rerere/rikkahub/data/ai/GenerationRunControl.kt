@@ -40,12 +40,6 @@ class GenerationRunControl(
     private val executingToolCallIds = linkedSetOf<String>()
     /** Process-only authority slot. Provider request construction has no reference to this field. */
     private val commandAuthority = me.rerere.rikkahub.service.chat.RuntimeRunAuthoritySlot()
-    private val policyLearningContext = AtomicReference<
-        me.rerere.rikkahub.learning.exposure.PolicyLearningCommandContext?
-        >(null)
-    private val policyExposureRefs = ConcurrentHashMap.newKeySet<String>()
-    private val policyShadowObserved = AtomicBoolean(false)
-
     internal suspend fun authorityResult(): me.rerere.rikkahub.service.chat.RuntimeAuthorityResult? =
         commandAuthority.current()
 
@@ -55,28 +49,6 @@ class GenerationRunControl(
     internal suspend fun attachRuntimeCommandAuthority(
         authority: me.rerere.rikkahub.service.chat.RuntimeRunAuthority,
     ) = commandAuthority.attach(authority)
-
-    fun attachPolicyLearningContext(
-        context: me.rerere.rikkahub.learning.exposure.PolicyLearningCommandContext,
-    ) {
-        check(context.logicalRunId == runId) { "Policy context belongs to another run" }
-        val existing = policyLearningContext.get()
-        check(existing == null || existing == context) { "Policy context identity changed mid-run" }
-        policyLearningContext.compareAndSet(null, context)
-    }
-
-    fun policyLearningContext(): me.rerere.rikkahub.learning.exposure.PolicyLearningCommandContext? =
-        policyLearningContext.get()
-
-    fun recordPolicyExposureReservation(reservationId: String) {
-        require(reservationId.startsWith("policy-exposure-v1:"))
-        policyExposureRefs += reservationId
-    }
-
-    fun policyExposureReservationIds(): Set<String> = policyExposureRefs.toSet()
-
-    /** At most one Stage-D would-recall observation is admitted per logical run. */
-    fun tryMarkPolicyShadowObserved(): Boolean = policyShadowObserved.compareAndSet(false, true)
 
     @Volatile var interruptedBy: Uuid? = null
         private set

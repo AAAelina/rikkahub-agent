@@ -31,7 +31,7 @@
 
 本项目基于 [ExTV/RikkaHub Agent](https://github.com/ExTV/rikkahub-agent)，底层来自开源 Android AI 客户端 [RikkaHub](https://github.com/rikkahub/rikkahub)。它保留多模型聊天、Android Agent 工具、工作流、定时任务、MCP、Skills、Telegram、Termux、SSH、Codex OAuth 等基础能力。
 
-这个 Fork 的重点不是继续堆叠通用工具，而是把一个助手真正固定在设备上：它可以通过 **系统 AI 键、桌宠和悬浮截屏** 随时出现，拥有受保护的 Owner 身份，并通过 **Dreaming-X** 与 **Agent Learning Runtime** 逐步形成可检查、可纠正的长期理解和任务经验。
+这个 Fork 的重点不是继续堆叠通用工具，而是把一个助手真正固定在设备上：它可以通过 **系统 AI 键、桌宠和悬浮截屏** 随时出现，拥有受保护的 Owner 身份，并通过 **Dreaming-X** 逐步形成可检查、可纠正的长期理解。
 
 > 本项目为独立维护的个人增强分支。Fork 特有问题请提交到本仓库，不要反馈给上游项目。
 
@@ -46,7 +46,6 @@
 | **桌宠伴生助手** | 常驻桌面，支持短对话、动作状态、TTS、日记归档与安全任务转交 | 已实现 |
 | **QuickCapture** | 悬浮按钮截取全屏或框选区域，自动发送到固定助手或带草稿打开会话 | 已实现 |
 | **Dreaming-X** | 以独立 Experience Ledger 形成用户、助手与关系三画像，支持证据审查、纠正和助手自查 | 实验性 |
-| **Agent Learning Runtime** | 从任务结果形成有证据的候选经验，经 Shadow 与人工审核后作为上下文建议 | Shadow / 审核阶段 |
 | **Secret Vault** | 使用 Android Keystore、AES-GCM 与强生物识别保护 Provider、TTS、ASR、MCP 凭据 | 已实现 |
 | **跨会话与运行控制** | 按需读取其他会话，并在生成过程中追加指令、取消、继续或恢复任务 | 已实现 |
 
@@ -177,30 +176,6 @@ Dream 使用独立模型入口，并继续复用 WorkManager、Lease、Retry、�
 
 ---
 
-## Agent Learning Runtime
-
-Agent Learning Runtime（ALR）负责学习“以后怎样把任务做得更好”，但不负责改写“用户是谁”。
-
-它与 Dreaming-X 分工明确：
-
-| 系统 | 负责 | 不负责 |
-| --- | --- | --- |
-| Dreaming-X | 用户画像、助手自我理解与关系上下文 | 自动生成任务执行权限 |
-| Agent Learning | 有证据的任务经验与上下文建议 | 改写个人记忆、系统提示词或工具权限 |
-
-ALR 的第一阶段支持：
-
-- Capture Only
-- Candidate Shadow
-- Retrieval Shadow
-- Reviewed Policy Opt-in
-
-学习结果默认不会改变正常回答。候选建议需要经过 Shadow、证据检查和人工审核，批准后也只是助手级或 Authority Subject 级的非可信上下文建议，不会成为系统指令，也不会授予文件、网络、Android 或工具权限。
-
-相关实现位于 [learning](app/src/main/java/me/rerere/rikkahub/learning)，设计边界见 [ALR Authority Scope](docs/adr/2026-08-12-agent-learning-authority-scope.md)。
-
----
-
 ## 跨会话、上下文与运行控制
 
 ### 跨会话读取
@@ -233,7 +208,7 @@ Owner Assistant 可以在用户启用后列出、读取和搜索其他会话。�
 - 查看或编辑明文需要 BIOMETRIC_STRONG。
 - 本地适配器只获得作用域受限、短时有效的内存 Lease。
 - 明文不会写入 Room、日志、Doctor、备份或普通模型工具结果。
-- Owner、桌宠、Dreaming-X 与 Agent Learning 各自保留独立权限边界。
+- Owner、桌宠与 Dreaming-X 各自保留独立权限边界。
 - HARDLINE、系统权限、来源审批与 Emergency Stop 继续生效。
 
 安全能力默认按需启用。Owner Authority 需要在本机完成选择与确认后才会激活。
@@ -246,7 +221,7 @@ Owner Assistant 可以在用户启用后列出、读取和搜索其他会话。�
 | --- | --- |
 | [RikkaHub](https://github.com/rikkahub/rikkahub) | Android 聊天客户端、Provider、多模型、多模态和基础数据结构 |
 | [ExTV/RikkaHub Agent](https://github.com/ExTV/rikkahub-agent) | Android Agent 工具、浏览器、Telegram、工作流、定时任务、MCP、Skills、Sub-agent、Codex OAuth 与 Agent Keyboard |
-| **本 Fork** | Owner Assistant、系统 AI 键入口、桌宠伴生运行时、QuickCapture、Dreaming-X、Agent Learning、Vault 与定制运行控制 |
+| **本 Fork** | Owner Assistant、系统 AI 键入口、桌宠伴生运行时、QuickCapture、Dreaming-X、Vault 与定制运行控制 |
 
 需要特别说明：
 
@@ -278,7 +253,6 @@ Owner Assistant 可以在用户启用后列出、读取和搜索其他会话。�
 | 项目 | 说明 |
 | --- | --- |
 | Dreaming-X | 实验性功能；Pair Portrait 与 Experience 派生状态可以重建，不替代原始聊天和记忆 |
-| Agent Learning | 当前以 Shadow 与人工审核为主，Policy 注入默认关闭 |
 | 系统 AI 键 | 不同 OEM 对系统助手、长按电源键和 AI 键的开放程度不同 |
 | MagicOS 快捷入口 | 可使用双音量键无障碍快捷服务；该服务不能读取窗口、执行手势或截图 |
 | 桌宠与 QuickCapture | 需要 Android 悬浮窗权限；截屏后端可能需要无障碍或 MediaProjection 授权 |
@@ -293,7 +267,7 @@ Owner Assistant 可以在用户启用后列出、读取和搜索其他会话。�
 1. 从 [Releases](https://github.com/AAAelina/rikkahub-agent/releases/latest) 下载最新 APK。
 2. 安装并添加至少一个 LLM Provider；也可以通过 ChatGPT OAuth 登录 Codex。
 3. 创建或选择一个 Assistant，在本机确认其 Owner / 第二用户身份。
-4. 按需启用系统助手、桌宠、QuickCapture、Dream 或 Agent Learning。
+4. 按需启用系统助手、桌宠、QuickCapture 或 Dream。
 5. 只授予实际需要的 Android 权限和工具分类。
 
 ### 从旧 Agent 版本迁移

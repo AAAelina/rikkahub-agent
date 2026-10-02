@@ -21,8 +21,8 @@ import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import me.rerere.rikkahub.data.db.ImportedDatabaseReconciler
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreStartupCoordinator
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreStartupResult
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreStartupCoordinator
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreStartupResult
 import java.io.File
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -54,6 +54,14 @@ import org.koin.androidx.workmanager.koin.workManagerFactory
 import org.koin.core.context.startKoin
 
 private const val TAG = "RikkaHubApp"
+private const val LEGACY_LEARNING_DATABASE_NAME = "learning_runtime.db"
+private val LEGACY_LEARNING_WORK_NAMES = listOf(
+    "agent_learning_drain_v1",
+    "agent_learning_startup_v1",
+    "agent_learning_recovery_v1",
+    "agent_learning_retention_v1",
+    "agent_learning_retention_periodic_v1",
+)
 internal const val VOICE_INTERACTOR_PROCESS_SUFFIX = ":voice_interactor"
 internal const val PLUGIN_RUNTIME_PROCESS_SUFFIX = ":plugin_runtime"
 
@@ -81,7 +89,7 @@ class RikkaHubApp : Application() {
             ColdRestoreStartupResult.Complete,
             -> Unit
             ColdRestoreStartupResult.RebuildRequired ->
-                Log.i(TAG, "Cold restore committed; Learning rebuild is required")
+                Log.i(TAG, "Cold restore committed; cleanup runs after startup")
             is ColdRestoreStartupResult.LiveDatabaseUnchanged ->
                 Log.w(TAG, "Cold restore preparation refused: ${coldRestore.reasonCode}")
             ColdRestoreStartupResult.Busy -> {
@@ -110,29 +118,18 @@ class RikkaHubApp : Application() {
             modules(appModule, viewModelModule, dataSourceModule, repositoryModule)
         }
         dependencyGraphStarted = true
-        // Privacy maintenance is content-free and may be armed immediately. Persisted Learning
-        // rollout flags, however, are unavailable until DataStore replaces Settings.dummy(). If
-        // the flag-gated scheduler samples that dummy value it cancels every drain/recovery chain
-        // and a previously enabled installation remains stuck until the user toggles the stage.
-        runCatching {
-            get<me.rerere.rikkahub.learning.jobs.LearningWorkScheduler>()
-                .scheduleMaintenance()
-        }.onFailure { error ->
-            Log.w(TAG, "Learning maintenance scheduling unavailable", error)
-        }
         get<AppScope>().launch(Dispatchers.IO) {
             runCatching {
-                val settings = get<SettingsStore>()
-                settings.settingsFlow.first { value -> !value.init }
+                var restoreSettled = coldRestore == ColdRestoreStartupResult.NoPendingRestore
                 if (coldRestore == ColdRestoreStartupResult.RebuildRequired || coldRestore == ColdRestoreStartupResult.Complete) {
-                    if (!get<me.rerere.rikkahub.learning.runtime.LearningRuntimeFacade>().finalizeColdRestore(settings)) {
-                        Log.i(TAG, "Cold restore cleanup retained until persisted consent or completed rebuild authorizes it")
+                    restoreSettled = ColdRestoreStartupCoordinator.finalizeDisabledDerivedState(this@RikkaHubApp)
+                    if (!restoreSettled) {
+                        Log.i(TAG, "Cold restore cleanup retained until the installed database validates")
                     }
                 }
-                get<me.rerere.rikkahub.learning.jobs.LearningWorkScheduler>()
-                    .scheduleStartupAndRecovery()
+                removeLegacyLearningState(deleteDatabase = restoreSettled)
             }.onFailure { error ->
-                Log.w(TAG, "Learning startup/recovery scheduling unavailable", error)
+                Log.w(TAG, "Cold restore finalization unavailable", error)
             }
         }
         get<AppScope>().launch(Dispatchers.IO) {
@@ -505,6 +502,22 @@ class RikkaHubApp : Application() {
             }.onFailure {
                 Log.e(TAG, "sweepOrphanHeadlessConversations failed", it)
             }
+        }
+    }
+
+    /**
+     * The Learning feature was removed. Cancel its WorkManager chains and, once no restore
+     * journal still references the file, delete its standalone database.
+     */
+    private fun removeLegacyLearningState(deleteDatabase: Boolean) {
+        runCatching {
+            val workManager = androidx.work.WorkManager.getInstance(this)
+            LEGACY_LEARNING_WORK_NAMES.forEach(workManager::cancelUniqueWork)
+        }.onFailure { error ->
+            Log.w(TAG, "Unable to cancel legacy Learning work", error)
+        }
+        if (deleteDatabase && getDatabasePath(LEGACY_LEARNING_DATABASE_NAME).exists()) {
+            deleteDatabase(LEGACY_LEARNING_DATABASE_NAME)
         }
     }
 

@@ -8,9 +8,6 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.io.File
 import java.util.UUID
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import me.rerere.rikkahub.AppScope
@@ -18,11 +15,8 @@ import me.rerere.rikkahub.data.datastore.Settings
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.db.createAppSQLiteOpenHelperFactory
-import me.rerere.rikkahub.learning.handoff.*
-import me.rerere.rikkahub.learning.storage.*
-import me.rerere.rikkahub.learning.retention.*
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreStartupCoordinator
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreStartupResult
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreStartupCoordinator
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreStartupResult
 import me.rerere.rikkahub.utils.JsonInstant
 import org.junit.After
 import org.junit.Assert.*
@@ -60,7 +54,7 @@ class BackupArchiveServiceRetainedOutboxTest {
         service = BackupArchiveService(settings, JsonInstant, context, database)
         database.openHelper.writableDatabase.execSQL(
             "INSERT INTO learning_outbox(stream_id,event_id,event_type,event_schema_version,created_at_ms) VALUES(?,?,'STREAM_INIT',1,0)",
-            arrayOf(STREAM, LEARNING_STREAM_INIT_EVENT_ID),
+            arrayOf(STREAM, me.rerere.rikkahub.data.db.migrations.LEARNING_V46_STREAM_INIT_EVENT_ID),
         )
         repeat(4) { append(it + 1) }
     }
@@ -76,14 +70,8 @@ class BackupArchiveServiceRetainedOutboxTest {
 
     @Test
     fun retainedSparseServiceExportAndColdImport() = runBlocking {
-        assertEquals(LearningOutboxRetentionResult.Completed(2, false),
-            RoomLearningPrimaryOutboxRetentionPort(database).pruneOnce(LearningOutboxRetentionRequest(
-                checkpoints = listOf(LearningDurableConsumerCheckpoint(
-                    consumerId = LearningDurableConsumerId.LEARNING_DERIVED_RUNTIME,
-                    streamId = STREAM, replayGeneration = 1L, lastContiguousSequence = 5L, bootstrapComplete = true,
-                )),
-                frozenNowMs = 100L, minimumAgeMs = 10L, safetyFloorRows = 2L, batchSize = 10,
-            )))
+        // A retained log may have pruned middle rows; the sentinel and head must survive.
+        database.openHelper.writableDatabase.execSQL("DELETE FROM learning_outbox WHERE seq IN (2, 3)")
         roundTrip(5L, listOf(1L, 4L, 5L))
     }
 
@@ -184,34 +172,6 @@ class BackupArchiveServiceRetainedOutboxTest {
         expectExportRejected()
     }
 
-    @Test
-    fun concurrentPruneAndExportFreezeOneConsistentRetainedSnapshot() = runBlocking {
-        val archive = File(context.cacheDir, "concurrent.zip")
-        coroutineScope {
-            val prune = async(Dispatchers.IO) {
-                RoomLearningPrimaryOutboxRetentionPort(database).pruneOnce(LearningOutboxRetentionRequest(
-                    checkpoints = listOf(LearningDurableConsumerCheckpoint(
-                        consumerId = LearningDurableConsumerId.LEARNING_DERIVED_RUNTIME,
-                        streamId = STREAM, replayGeneration = 1L, lastContiguousSequence = 5L, bootstrapComplete = true,
-                    )), frozenNowMs = 100L, minimumAgeMs = 10L, safetyFloorRows = 2L, batchSize = 10,
-                ))
-            }
-            val export = async(Dispatchers.IO) { service.createBackup(archive, true, false) }
-            prune.await()
-            export.await()
-        }
-        val snapshot = File(context.cacheDir, "frozen.db")
-        BackupArchiveV1FileIO.extractEntry(BackupArchiveV1FileIO.inspect(archive), BACKUP_ARCHIVE_MAIN_DATABASE_ENTRY, snapshot)
-        val sequences = android.database.sqlite.SQLiteDatabase.openDatabase(snapshot.path, null,
-            android.database.sqlite.SQLiteDatabase.OPEN_READONLY).use { db ->
-            db.rawQuery("SELECT seq FROM learning_outbox ORDER BY seq", null).use {
-                buildList { while (it.moveToNext()) add(it.getLong(0)) }
-            }
-        }
-        assertTrue(sequences == listOf(1L, 2L, 3L, 4L, 5L) || sequences == listOf(1L, 4L, 5L))
-        restoreAndReplay(archive, 5L, sequences)
-    }
-
     private fun preserveSynthetic(file: File, suffix: String) {
         PlatformTestStorageRegistry.getInstance().openOutputFile("restore-p0-${testName.methodName}-$suffix").use { output ->
             file.inputStream().use { it.copyTo(output) }
@@ -252,23 +212,6 @@ class BackupArchiveServiceRetainedOutboxTest {
         database = openDatabase()
         database.openHelper.writableDatabase.query("SELECT seq FROM learning_outbox ORDER BY seq").use {
             assertEquals(expected, buildList { while (it.moveToNext()) add(it.getLong(0)) })
-        }
-        val learning = Room.inMemoryDatabaseBuilder(context, LearningDatabase::class.java).build()
-        try {
-            learning.checkpointDao().insert(LearningStreamCheckpointEntity(
-                streamId = STREAM, lastContiguousSeq = 0L, lastSeenHeadSeq = head,
-                replayGeneration = 1L, resetReason = LearningStreamResetReason.DERIVED_DATABASE_RECREATED.name,
-                bootstrapState = LearningBootstrapState.REQUIRED.name, bootstrapHeadSeq = head,
-                coverageStartMs = null, commandCoverageStartMs = null, executionCoverageStartMs = null,
-                updatedAtMs = 0L,
-            ))
-            LearningBootstrapCoordinator(learning, RoomLearningOutboxReader(database),
-                RoomLearningReconciliationScanner(database), clockMs = { 100L }).bootstrap(100L)
-            val checkpoint = requireNotNull(learning.checkpointDao().find(STREAM))
-            assertEquals(LearningBootstrapState.COMPLETE.name, checkpoint.bootstrapState)
-            assertEquals(head, checkpoint.lastContiguousSeq)
-        } finally {
-            learning.close()
         }
     }
 

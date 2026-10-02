@@ -29,9 +29,6 @@ import me.rerere.rikkahub.ui.pages.translator.TranslatorVM
 import me.rerere.rikkahub.ui.pages.setting.doctor.DoctorViewModel
 import me.rerere.rikkahub.ui.pages.setting.scheduledjobs.ScheduledJobsViewModel
 import me.rerere.rikkahub.ui.pages.memory.MemoryCenterVM
-import me.rerere.rikkahub.ui.pages.learning.LearningCenterVM
-import me.rerere.rikkahub.ui.pages.learning.curator.CuratorReviewVM
-import me.rerere.rikkahub.ui.pages.learning.workflow.WorkflowReviewVM
 import me.rerere.rikkahub.workflow.ui.WorkflowsViewModel
 import org.koin.core.module.dsl.viewModel
 import org.koin.core.module.dsl.viewModelOf
@@ -48,7 +45,6 @@ val viewModelModule = module {
             updateChecker = get(),
             filesManager = get(),
             favoriteRepository = get(),
-            rewardFeedbackAuthorityRepository = get(),
         )
     }
     viewModelOf(::ChatDrawerVM)
@@ -85,32 +81,6 @@ val viewModelModule = module {
             dreamObserverDiagnostics = get(),
             dreamReviewRepository = get(),
             dreamSynthesisCoordinator = get(),
-        )
-    }
-    viewModel<LearningCenterVM> { params ->
-        LearningCenterVM(
-            id = params.get(),
-            settingsStore = get(),
-            repository = get(),
-            workflowSubmission = get(),
-            positiveMutations = get(),
-        )
-    }
-    viewModel<WorkflowReviewVM> { params ->
-        WorkflowReviewVM(
-            assistantId = params.get(),
-            repository = get(),
-            settingsStore = get(),
-            positiveMutations = get(),
-        )
-    }
-    viewModel<CuratorReviewVM> { params ->
-        CuratorReviewVM(
-            assistantId = params.get(),
-            review = get(),
-            apply = get(),
-            producer = get(),
-            positiveMutations = get(),
         )
     }
     viewModelOf(::TranslatorVM)

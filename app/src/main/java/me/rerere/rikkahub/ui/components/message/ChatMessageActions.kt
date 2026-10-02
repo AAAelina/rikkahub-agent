@@ -51,8 +51,6 @@ import me.rerere.hugeicons.stroke.Refresh03
 import me.rerere.hugeicons.stroke.Share04
 import me.rerere.hugeicons.stroke.StopCircle
 import me.rerere.hugeicons.stroke.TextSelection
-import me.rerere.hugeicons.stroke.ThumbsDown
-import me.rerere.hugeicons.stroke.ThumbsUp
 import me.rerere.hugeicons.stroke.Translate
 import me.rerere.hugeicons.stroke.VolumeHigh
 import me.rerere.hugeicons.stroke.WebDesign01
@@ -74,8 +72,6 @@ fun ColumnScope.ChatMessageActionButtons(
     onUpdate: (kotlin.uuid.Uuid, kotlin.uuid.Uuid) -> Unit,
     onRegenerate: () -> Unit,
     onOpenActionSheet: () -> Unit,
-    onHelpfulFeedback: ((UIMessage) -> Unit)? = null,
-    onNotHelpfulFeedback: ((UIMessage) -> Unit)? = null,
     onTranslate: ((UIMessage, Locale) -> Unit)? = null,
     onClearTranslation: (UIMessage) -> Unit = {},
 ) {
@@ -127,32 +123,6 @@ fun ColumnScope.ChatMessageActionButtons(
         )
 
         if (message.role == MessageRole.ASSISTANT) {
-            if (onHelpfulFeedback != null) {
-                Icon(
-                    imageVector = HugeIcons.ThumbsUp,
-                    contentDescription = stringResource(R.string.learning_feedback_helpful),
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .clickable { onHelpfulFeedback(message) }
-                        .padding(8.dp)
-                        .size(16.dp),
-                    tint = actionIconColor,
-                )
-            }
-
-            if (onNotHelpfulFeedback != null) {
-                Icon(
-                    imageVector = HugeIcons.ThumbsDown,
-                    contentDescription = stringResource(R.string.learning_feedback_not_helpful),
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .clickable { onNotHelpfulFeedback(message) }
-                        .padding(8.dp)
-                        .size(16.dp),
-                    tint = actionIconColor,
-                )
-            }
-
             val tts = LocalTTSState.current
             val settings = LocalSettings.current
             val isSpeaking by tts.isSpeaking.collectAsStateWithLifecycle()

@@ -4,8 +4,7 @@ import android.database.sqlite.SQLiteDatabase
 import androidx.room.testing.MigrationTestHelper
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import me.rerere.rikkahub.learning.grant.policyGrantId
-import me.rerere.rikkahub.learning.model.LearningScope
+import me.rerere.rikkahub.data.scope.CanonicalId
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -320,11 +319,10 @@ private const val POLICY_ID = "policy-restore-contract"
 private const val SUBJECT = "authority-subject-restore-contract"
 private const val CONSUMER = "a0000000-0000-0000-0000-000000000001"
 private val ARTIFACT_SHA = "a".repeat(64)
-private val GRANT_ID = policyGrantId(
-    sourceStreamId = STREAM,
-    scope = LearningScope.AuthoritySubject(SUBJECT),
-    consumingAssistantId = Uuid.parse(CONSUMER),
-    policyId = POLICY_ID,
+// Same derivation the removed Learning grant service used for persisted grant rows.
+private val GRANT_ID = "policy-grant-v1:" + CanonicalId.digest(
+    domainVersion = "policy-grant-id-v1",
+    fields = listOf(STREAM, "AUTHORITY_SUBJECT", SUBJECT, CONSUMER, POLICY_ID),
 )
 private const val GRANT_COLUMN_COUNT = 16
 private const val GRANT_COLUMNS =

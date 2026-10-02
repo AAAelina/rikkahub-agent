@@ -14,28 +14,26 @@ import me.rerere.rikkahub.data.sync.backup.BackupArchiveComponent
 import me.rerere.rikkahub.data.sync.backup.BackupArchiveSourceV1
 import me.rerere.rikkahub.data.sync.backup.BackupArchiveV1FileIO
 import me.rerere.rikkahub.data.sync.backup.BackupAuthorityStreamV1
-import me.rerere.rikkahub.learning.grant.policyGrantId
-import me.rerere.rikkahub.learning.model.LearningScope
-import me.rerere.rikkahub.learning.storage.LearningDatabase
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreArchiveStager
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreBootstrap
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreBootstrapFailure
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreBootstrapPathValidation
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreBootstrapPaths
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreBootstrapResult
-import me.rerere.rikkahub.learning.storage.restore.ColdRestorePreparedDatabaseReconciler
-import me.rerere.rikkahub.learning.storage.restore.ColdRestorePreparedDatabaseValidator
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreRequestIdSource
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreStageResult
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreStagingPathValidation
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreStagingPaths
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreSwapExecutor
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreSwapResult
-import me.rerere.rikkahub.learning.storage.restore.LearningOwnedDatabasePaths
-import me.rerere.rikkahub.learning.storage.restore.LearningOwnedDatabasePathValidation
-import me.rerere.rikkahub.learning.storage.restore.VerifiedColdRestoreArchive
-import me.rerere.rikkahub.learning.storage.restore.VerifiedColdRestoreArchiveResult
-import me.rerere.rikkahub.learning.workflow.WorkflowArtifactCanonicalizer
+import me.rerere.rikkahub.data.scope.CanonicalId
+import me.rerere.rikkahub.data.sync.backup.restore.LEARNING_DATABASE_FILE_NAME
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreArchiveStager
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreBootstrap
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreBootstrapFailure
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreBootstrapPathValidation
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreBootstrapPaths
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreBootstrapResult
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestorePreparedDatabaseReconciler
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestorePreparedDatabaseValidator
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreRequestIdSource
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreStageResult
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreStagingPathValidation
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreStagingPaths
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreSwapExecutor
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreSwapResult
+import me.rerere.rikkahub.data.sync.backup.restore.LearningOwnedDatabasePaths
+import me.rerere.rikkahub.data.sync.backup.restore.LearningOwnedDatabasePathValidation
+import me.rerere.rikkahub.data.sync.backup.restore.VerifiedColdRestoreArchive
+import me.rerere.rikkahub.data.sync.backup.restore.VerifiedColdRestoreArchiveResult
 import me.rerere.rikkahub.workflow.model.TriggerSpec
 import me.rerere.rikkahub.workflow.model.WorkflowAction
 import me.rerere.rikkahub.workflow.model.WorkflowDefinition
@@ -422,7 +420,7 @@ class AppDatabaseV49BackupRestoreRoundTripTest {
         val noBackup = File(root, "no_backup").apply { assertTrue(mkdir()) }
         val databases = File(root, "databases").apply { assertTrue(mkdir()) }
         val liveDatabase = File(databases, "rikka_hub").apply { writeBytes(liveBytes) }
-        val learningDatabase = File(databases, LearningDatabase.FILE_NAME).apply {
+        val learningDatabase = File(databases, LEARNING_DATABASE_FILE_NAME).apply {
             writeText("old-derived-learning")
         }
         return RestoreFixture(
@@ -576,18 +574,20 @@ class AppDatabaseV49BackupRestoreRoundTripTest {
         val POLICY_ARTIFACT_SHA = "a".repeat(64)
         val WORKFLOW_ARTIFACT_SHA = "b".repeat(64)
         val TOOL_SCHEMA_SHA = "c".repeat(64)
-        val GRANT_ID = policyGrantId(
-            sourceStreamId = STREAM_ID,
-            scope = LearningScope.AuthoritySubject(AUTHORITY_SUBJECT_ID),
-            consumingAssistantId = Uuid.parse(CONSUMING_ASSISTANT_ID),
-            policyId = POLICY_ID,
+        // Same derivations the removed Learning grant/workflow code used for persisted rows.
+        val GRANT_ID = "policy-grant-v1:" + CanonicalId.digest(
+            domainVersion = "policy-grant-id-v1",
+            fields = listOf(
+                STREAM_ID,
+                "AUTHORITY_SUBJECT",
+                AUTHORITY_SUBJECT_ID,
+                CONSUMING_ASSISTANT_ID,
+                POLICY_ID,
+            ),
         )
-        val GRANT_DIGEST = WorkflowArtifactCanonicalizer.grantDigest(
-            grantId = GRANT_ID,
-            sourceStreamId = STREAM_ID,
-            stateVersion = 1L,
-            policyRevision = 7L,
-            artifactSha256 = POLICY_ARTIFACT_SHA,
+        val GRANT_DIGEST = CanonicalId.digest(
+            domainVersion = "learned-workflow-grant-receipt-v1",
+            fields = listOf(GRANT_ID, STREAM_ID, "1", "7", POLICY_ARTIFACT_SHA),
         )
         const val GRANT_COLUMN_COUNT = 16
         const val GRANT_COLUMNS =

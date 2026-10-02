@@ -30,18 +30,6 @@ data class Assistant(
     val streamOutput: Boolean = true,
     val enableWebSearch: Boolean = false,
     val enableMemory: Boolean = false,
-    /** Exact Assistant-scope Learning capture consent; the global rollout gate is also required. */
-    val learningCaptureEnabled: Boolean = false,
-    /** Separate consent for this Assistant when acting as the active authority subject. */
-    val authoritySubjectLearningCaptureEnabled: Boolean = false,
-    /**
-     * Explicit per-Assistant consent for P2 reviewed Policy advice.
-     *
-     * The device-wide Stage-E switch and an exact durable grant are still required. This flag
-     * only authorizes this Assistant to consume contextual advice; it never changes tool
-     * permissions, creates a GLOBAL scope, or promotes the advice to a system/standing prompt.
-     */
-    val reviewedPolicyInjectionEnabled: Boolean = false,
     val memoryAutoSaveMode: MemoryAutoSaveMode = MemoryAutoSaveMode.OFF,
     val memoryCaptureOrigins: Set<MemoryCaptureOrigin> = setOf(
         MemoryCaptureOrigin.APP_UI,

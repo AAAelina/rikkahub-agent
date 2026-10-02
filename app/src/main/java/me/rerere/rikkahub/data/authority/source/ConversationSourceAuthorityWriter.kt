@@ -43,6 +43,10 @@ object AllowConversationSourceInitialCapture : ConversationSourceInitialCaptureG
     override fun allowInitialCapture(scope: ConversationSourceScope): Boolean = true
 }
 
+object DenyConversationSourceInitialCapture : ConversationSourceInitialCaptureGate {
+    override fun allowInitialCapture(scope: ConversationSourceScope): Boolean = false
+}
+
 data class ConversationSourceAuthorityCommit(
     val conversation: ConversationSourceAuthorityHead,
     val previousConversation: ConversationSourceAuthorityHead?,

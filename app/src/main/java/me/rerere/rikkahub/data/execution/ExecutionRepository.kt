@@ -4,7 +4,7 @@ import java.security.MessageDigest
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import me.rerere.rikkahub.learning.model.LearningScope
+import me.rerere.rikkahub.data.scope.AgentScope
 
 /** Input for a new authoritative execution row. All fields are deliberately non-secret. */
 data class ExecutionRecordDraft(
@@ -19,7 +19,7 @@ data class ExecutionRecordDraft(
     val owningAssistantMessageId: String? = null,
     val owningAssistantMessageRevision: Long? = null,
     /** Frozen at admission. Legacy imported rows may be null, but new runtime rows may not. */
-    val learningScope: LearningScope,
+    val learningScope: AgentScope,
     val subjectId: String,
     val subjectType: String,
     val origin: String,
@@ -350,8 +350,8 @@ internal fun ExecutionRecordDraft.toRecord(nowMs: Long): ExecutionRecord = Execu
 )
 
 /** Parses only the explicitly frozen scope columns; legacy rows are never inferred or promoted. */
-fun ExecutionRecord.learningScopeOrNull(): LearningScope? {
+fun ExecutionRecord.learningScopeOrNull(): AgentScope? {
     val kind = learningScopeKind ?: return null
     val id = learningScopeId ?: return null
-    return LearningScope.parseOrNull(kind, id)
+    return AgentScope.parseOrNull(kind, id)
 }

@@ -13,7 +13,7 @@ import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.repository.ConversationSourceInvalidationMode
 import me.rerere.rikkahub.data.repository.ConversationRepository
-import me.rerere.rikkahub.learning.model.LearningScope
+import me.rerere.rikkahub.data.scope.AgentScope
 
 /** Non-secret ownership captured at the point a second-user generation pauses. */
 data class PendingApprovalOwner(
@@ -240,7 +240,7 @@ class SecondUserApprovalLifecycle(
                         toolCallId = tool.toolCallId,
                         toolName = tool.toolName,
                         toolSchemaFingerprint = schemaFingerprint,
-                        learningScope = LearningScope.AuthoritySubject(owner.subjectId),
+                        learningScope = AgentScope.AuthoritySubject(owner.subjectId),
                         subjectId = owner.subjectId,
                         subjectType = owner.subjectType.name,
                         origin = owner.origin.name,
@@ -324,7 +324,7 @@ class SecondUserApprovalLifecycle(
                     toolCallId = tool.toolCallId,
                     toolName = tool.toolName,
                     toolSchemaFingerprint = requireNotNull(tool.toolSchemaFingerprint),
-                    learningScope = LearningScope.AuthoritySubject(owner.subjectId),
+                    learningScope = AgentScope.AuthoritySubject(owner.subjectId),
                     subjectId = owner.subjectId,
                     subjectType = owner.subjectType.name,
                     origin = owner.origin.name,

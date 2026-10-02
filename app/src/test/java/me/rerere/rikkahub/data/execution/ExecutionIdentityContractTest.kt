@@ -1,6 +1,6 @@
 package me.rerere.rikkahub.data.execution
 
-import me.rerere.rikkahub.learning.model.LearningScope
+import me.rerere.rikkahub.data.scope.AgentScope
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -29,7 +29,7 @@ class ExecutionIdentityContractTest {
         assertFalse(record.hasSameAdmissionIdentityAs(draft.copy(subjectId = "other-subject")))
         assertFalse(
             record.hasSameAdmissionIdentityAs(
-                draft.copy(learningScope = LearningScope.AuthoritySubject("other-subject")),
+                draft.copy(learningScope = AgentScope.AuthoritySubject("other-subject")),
             ),
         )
         assertFalse(record.hasSameAdmissionIdentityAs(draft.copy(capabilityKeys = "tool.other")))
@@ -115,16 +115,6 @@ class ExecutionIdentityContractTest {
     }
 
     @Test
-    fun `terminal learning correlation includes authoritative generation run`() {
-        val correlation = draft().toRecord(nowMs = 1L).toLearningCorrelation()
-
-        assertEquals("conversation-1", correlation.conversationId)
-        assertEquals("command-1", correlation.commandId)
-        assertEquals("run-1", correlation.generationRunId)
-        assertEquals("execution-1", correlation.executionId)
-    }
-
-    @Test
     fun `tool identities never collide by truncation or ambiguous separators`() {
         val canonicalRun = "00000000-0000-0000-0000-000000000010"
         assertEquals(
@@ -171,7 +161,7 @@ class ExecutionIdentityContractTest {
         parentExecutionId = "parent-1",
         commandId = "command-1",
         conversationId = "conversation-1",
-        learningScope = LearningScope.Assistant(assistantId),
+        learningScope = AgentScope.Assistant(assistantId),
         subjectId = "subject-1",
         subjectType = "LOCAL_ASSISTANT",
         origin = "LocalChat",

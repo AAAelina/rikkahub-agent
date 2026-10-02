@@ -57,7 +57,6 @@ import me.rerere.rikkahub.memory.dreaming.runtime.DreamingScopePreferenceMutatio
 import me.rerere.rikkahub.memory.dreaming.runtime.DreamingScopePreferences
 import me.rerere.rikkahub.memory.dreaming.runtime.decodeDreamingPreferencesOrDefault
 import me.rerere.rikkahub.memory.dreaming.runtime.encodeDreamingPreferencesFailClosed
-import me.rerere.rikkahub.learning.model.LearningPreferencesV1
 import me.rerere.rikkahub.ui.theme.CustomTheme
 import me.rerere.rikkahub.ui.theme.PresetThemes
 import me.rerere.rikkahub.utils.JsonInstant
@@ -143,6 +142,7 @@ class SettingsStore(
         val MEMORY_EXTRACTION_MODEL = stringPreferencesKey("memory_extraction_model")
         val DREAM_MODEL = stringPreferencesKey("dream_model")
         val DREAMING_PREFERENCES_V1 = stringPreferencesKey("dreaming_preferences_v1")
+        /** Removed feature; the key is only kept so the next settings write deletes it. */
         val LEARNING_PREFERENCES_V1 = stringPreferencesKey("agent_learning_preferences_v1")
         val TITLE_MODEL = stringPreferencesKey("title_model")
         val TRANSLATE_MODEL = stringPreferencesKey("translate_model")
@@ -223,24 +223,6 @@ class SettingsStore(
         val SPONSOR_ALERT_DISMISSED_AT = intPreferencesKey("sponsor_alert_dismissed_at")
     }
 
-    /** No dummy/default-on-error fallback may authorize irreversible restore cleanup.
-     * DataStore serializes this callback with every persisted settings write. */
-    internal suspend fun <T> withPersistedLearningPreferences(
-        operation: suspend (LearningPreferencesV1?) -> T,
-    ): T {
-        var result: Any? = null
-        dataStore.updateData { preferences ->
-            val raw = preferences[LEARNING_PREFERENCES_V1]
-            val persisted = if (raw == null) LearningPreferencesV1() else runCatching {
-                JsonInstant.decodeFromString<LearningPreferencesV1>(raw)
-            }.getOrNull()?.takeIf { it.failClosed() == it }
-            result = operation(persisted)
-            preferences
-        }
-        @Suppress("UNCHECKED_CAST")
-        return result as T
-    }
-
     val settingsFlowRaw = dataStore.data
         .catch { exception ->
             if (exception is IOException) {
@@ -265,11 +247,6 @@ class SettingsStore(
                 dreamingPreferences = decodeDreamingPreferencesOrDefault(
                     preferences[DREAMING_PREFERENCES_V1],
                 ),
-                learningPreferences = preferences[LEARNING_PREFERENCES_V1]?.let { raw ->
-                    runCatching { JsonInstant.decodeFromString<LearningPreferencesV1>(raw) }
-                        .getOrNull()
-                        ?.failClosed()
-                } ?: LearningPreferencesV1(),
                 titleModelId = preferences[TITLE_MODEL]?.let { Uuid.parse(it) },
                 translateModeId = preferences[TRANSLATE_MODEL]?.let { Uuid.parse(it) }
                     ?: DEFAULT_AUTO_MODEL_ID,
@@ -568,9 +545,7 @@ class SettingsStore(
             preferences[DREAMING_PREFERENCES_V1] = encodeDreamingPreferencesFailClosed(
                 settings.dreamingPreferences,
             )
-            preferences[LEARNING_PREFERENCES_V1] = JsonInstant.encodeToString(
-                settings.learningPreferences.failClosed(),
-            )
+            preferences.remove(LEARNING_PREFERENCES_V1)
             settings.titleModelId?.let {
                 preferences[TITLE_MODEL] = it.toString()
             } ?: preferences.remove(TITLE_MODEL)
@@ -833,7 +808,6 @@ data class Settings(
     /** Null follows the configured Memory extraction model; non-null selects Dream independently. */
     val dreamModelId: Uuid? = null,
     val dreamingPreferences: DreamingPreferencesV1 = DreamingPreferencesV1(),
-    val learningPreferences: LearningPreferencesV1 = LearningPreferencesV1(),
     val titleModelId: Uuid? = null,
     val imageGenerationModelId: Uuid = Uuid.random(),
     val titlePrompt: String = DEFAULT_TITLE_PROMPT,

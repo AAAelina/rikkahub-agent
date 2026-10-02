@@ -18,11 +18,11 @@ import me.rerere.rikkahub.data.db.readRetainedLearningOutboxOrThrow
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.files.FileFolders
 import me.rerere.rikkahub.data.files.SkillPaths
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreArchiveStager
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreStageResult
-import me.rerere.rikkahub.learning.storage.restore.ColdRestoreStagingPaths
-import me.rerere.rikkahub.learning.storage.restore.VerifiedColdRestoreArchive
-import me.rerere.rikkahub.learning.storage.restore.VerifiedColdRestoreArchiveResult
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreArchiveStager
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreStageResult
+import me.rerere.rikkahub.data.sync.backup.restore.ColdRestoreStagingPaths
+import me.rerere.rikkahub.data.sync.backup.restore.VerifiedColdRestoreArchive
+import me.rerere.rikkahub.data.sync.backup.restore.VerifiedColdRestoreArchiveResult
 
 private const val MAIN_DATABASE_NAME = "rikka_hub"
 private const val MAX_SETTINGS_RESTORE_BYTES = 4 * 1_024 * 1_024
@@ -76,9 +76,7 @@ class BackupArchiveService(
         val sources = mutableListOf<BackupArchiveSourceV1>(
             BackupArchiveSourceV1.Bytes(
                 name = BACKUP_ARCHIVE_SETTINGS_ENTRY,
-                bytes = json.encodeToString(
-                    BackupSettingsSanitizer.forPortableArchive(settingsStore.settingsFlow.value),
-                )
+                bytes = json.encodeToString(settingsStore.settingsFlow.value)
                     .toByteArray(Charsets.UTF_8),
             ),
         )
@@ -397,11 +395,7 @@ internal class BackupArchiveComponentRestorer(
             maxBytes = MAX_SETTINGS_RESTORE_BYTES,
         )
         val migrated = SettingsJsonMigrator.migrate(settingsBytes.toString(Charsets.UTF_8))
-        settingsStore.update(
-            BackupSettingsSanitizer.afterPortableRestore(
-                json.decodeFromString<Settings>(migrated),
-            ),
-        )
+        settingsStore.update(json.decodeFromString<Settings>(migrated))
     }
 
     fun restoreFiles(archive: VerifiedBackupArchiveV1) {

@@ -9,17 +9,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import me.rerere.rikkahub.data.scope.AgentScope
 import me.rerere.rikkahub.data.db.AppDatabase
 import me.rerere.rikkahub.data.ai.ToolCallOrigin
 import me.rerere.rikkahub.data.ai.tools.ToolExecutionContext
-import me.rerere.rikkahub.data.db.entity.LearningOutboxEntity
-import me.rerere.rikkahub.learning.handoff.LEARNING_STREAM_INIT_EVENT_ID
-import me.rerere.rikkahub.learning.handoff.LearningOutboxAppender
-import me.rerere.rikkahub.learning.model.LearningFeatureCapabilities
-import me.rerere.rikkahub.learning.model.LearningFeatureFlagPolicy
-import me.rerere.rikkahub.learning.model.LearningFeatureFlagSource
-import me.rerere.rikkahub.learning.model.LearningFeatureFlags
-import me.rerere.rikkahub.learning.model.LearningScope
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Before
@@ -141,152 +134,6 @@ class ExecutionRecordDaoTest {
     }
 
     @Test
-    fun terminalTransition_commitsSnapshotEventAndOutboxAndWakesOnce() = runBlocking {
-        insertLearningStreamSentinel()
-        var wakes = 0
-        val transaction = learningEnabledTransaction { wakes++ }
-        val opened = transaction.open(learningExecutionDraft("execution-terminal-atomic"))
-
-        val result = transaction.mutate(
-            ExecutionMutation(
-                executionId = opened.id,
-                mutationId = "terminal-mutation-atomic",
-                expectedVersion = opened.stateVersion,
-                source = ExecutionStateSource.LIVE_EVENT,
-                targetStatus = ExecutionStatus.succeeded,
-            ),
-        )
-
-        assertEquals(ExecutionMutationResult.Applied::class, result::class)
-        assertEquals(ExecutionStatus.succeeded.name, dao.getById(opened.id)?.status)
-        assertEquals(2, db.executionEventDao().getEvents(opened.id, 10).size)
-        assertEquals(
-            1,
-            db.learningOutboxDao().listAfter(STREAM_ID, 1L, 10)
-                .count { it.eventType == "EXECUTION_TERMINAL" },
-        )
-        assertEquals(1, wakes)
-    }
-
-    @Test
-    fun terminalMutationReceipt_defersWakeUntilOwningOuterTransactionCommits() = runBlocking {
-        insertLearningStreamSentinel()
-        var wakes = 0
-        val transaction = learningEnabledTransaction { wakes++ }
-        val opened = transaction.open(learningExecutionDraft("execution-terminal-outer"))
-        lateinit var commit: ExecutionMutationCommit
-
-        db.withTransaction {
-            commit = transaction.mutateInCurrentTransaction(
-                ExecutionMutation(
-                    executionId = opened.id,
-                    mutationId = "terminal-mutation-outer",
-                    expectedVersion = opened.stateVersion,
-                    source = ExecutionStateSource.USER,
-                    targetStatus = ExecutionStatus.cancelled,
-                ),
-            )
-            assertEquals(ExecutionMutationResult.Applied::class, commit.result::class)
-            assertEquals(true, commit.insertedOutbox)
-            assertEquals(0, wakes)
-        }
-
-        assertEquals(0, wakes)
-        transaction.dispatchExternalPostCommit(commit)
-        assertEquals(1, wakes)
-    }
-
-    @Test
-    fun rolledBackOuterMutation_neverDispatchesReceiptOrLeavesTerminalOutbox() = runBlocking {
-        insertLearningStreamSentinel()
-        var wakes = 0
-        val transaction = learningEnabledTransaction { wakes++ }
-        val opened = transaction.open(learningExecutionDraft("execution-terminal-outer-rollback"))
-
-        val failure = runCatching {
-            db.withTransaction {
-                val commit = transaction.mutateInCurrentTransaction(
-                    ExecutionMutation(
-                        executionId = opened.id,
-                        mutationId = "terminal-mutation-outer-rollback",
-                        expectedVersion = opened.stateVersion,
-                        source = ExecutionStateSource.USER,
-                        targetStatus = ExecutionStatus.cancelled,
-                    ),
-                )
-                assertEquals(true, commit.insertedOutbox)
-                assertEquals(0, wakes)
-                error("force_outer_rollback")
-            }
-        }
-
-        assertEquals(true, failure.isFailure)
-        assertEquals(ExecutionStatus.running.name, dao.getById(opened.id)?.status)
-        assertEquals(
-            0,
-            db.learningOutboxDao().listAfter(STREAM_ID, 1L, 10)
-                .count { it.eventType == "EXECUTION_TERMINAL" },
-        )
-        assertEquals(0, wakes)
-    }
-
-    @Test
-    fun duplicateTerminalMutation_keepsSingleOutboxRowAndDoesNotDuplicateAuthorityState() =
-        runBlocking {
-            insertLearningStreamSentinel()
-            var wakes = 0
-            val transaction = learningEnabledTransaction { wakes++ }
-            val opened = transaction.open(learningExecutionDraft("execution-terminal-replay"))
-            val mutation = ExecutionMutation(
-                executionId = opened.id,
-                mutationId = "terminal-mutation-replay",
-                expectedVersion = opened.stateVersion,
-                source = ExecutionStateSource.LIVE_EVENT,
-                targetStatus = ExecutionStatus.succeeded,
-            )
-
-            assertEquals(ExecutionMutationResult.Applied::class, transaction.mutate(mutation)::class)
-            assertEquals(ExecutionMutationResult.Duplicate::class, transaction.mutate(mutation)::class)
-
-            assertEquals(2L, dao.getById(opened.id)?.stateVersion)
-            assertEquals(2, db.executionEventDao().getEvents(opened.id, 10).size)
-            assertEquals(
-                1,
-                db.learningOutboxDao().listAfter(STREAM_ID, 1L, 10)
-                    .count { it.eventType == "EXECUTION_TERMINAL" },
-            )
-            assertEquals(1, wakes)
-        }
-
-    @Test
-    fun outboxFailure_rollsBackTerminalSnapshotAndExecutionEvent() = runBlocking {
-        var wakes = 0
-        val transaction = learningEnabledTransaction { wakes++ }
-        val opened = transaction.open(learningExecutionDraft("execution-terminal-rollback"))
-
-        runCatching {
-            transaction.mutate(
-                ExecutionMutation(
-                    executionId = opened.id,
-                    mutationId = "terminal-mutation-rollback",
-                    expectedVersion = opened.stateVersion,
-                    source = ExecutionStateSource.LIVE_EVENT,
-                    targetStatus = ExecutionStatus.failed,
-                ),
-            )
-        }.onSuccess {
-            error("Missing stream sentinel must fail the owning authority transaction")
-        }
-
-        val after = requireNotNull(dao.getById(opened.id))
-        assertEquals(ExecutionStatus.running.name, after.status)
-        assertEquals(opened.stateVersion, after.stateVersion)
-        assertEquals(1, db.executionEventDao().getEvents(opened.id, 10).size)
-        assertEquals(0, db.learningOutboxDao().listDistinctStreamIds().size)
-        assertEquals(0, wakes)
-    }
-
-    @Test
     fun managedRegistration_createsARealChildBeforeRuntimeStart() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         try {
@@ -343,7 +190,7 @@ class ExecutionRecordDaoTest {
                     id = "workspace:wp_12345678",
                     traceId = "run",
                     conversationId = "conversation",
-                    learningScope = LearningScope.Assistant(
+                    learningScope = AgentScope.Assistant(
                         Uuid.parse("00000000-0000-0000-0000-000000000001"),
                     ),
                     subjectId = "assistant",
@@ -415,66 +262,6 @@ class ExecutionRecordDaoTest {
         )
     }
 
-    private fun learningEnabledTransaction(wake: () -> Unit) = ExecutionStateTransaction(
-        database = db,
-        recordDao = dao,
-        eventDao = db.executionEventDao(),
-        learningOutboxAppender = LearningOutboxAppender(db),
-        learningFeatureFlags = LearningFeatureFlagSource {
-            LearningFeatureFlagPolicy.resolve(
-                LearningFeatureFlags(schemaReady = true, handoff = true),
-                LearningFeatureCapabilities(schemaReady = true),
-            )
-        },
-        learningPostCommitWake = wake,
-        learningScopeConsent = me.rerere.rikkahub.learning.model.AllowAllLearningScopeConsentSource,
-    )
-
-    private fun learningExecutionDraft(id: String) = ExecutionRecordDraft(
-        id = id,
-        traceId = "generation-run",
-        commandId = "00000000-0000-0000-0000-000000000011",
-        conversationId = "00000000-0000-0000-0000-000000000012",
-        learningScope = LearningScope.Assistant(
-            Uuid.parse("00000000-0000-0000-0000-000000000013"),
-        ),
-        subjectId = "assistant",
-        subjectType = "LOCAL_ASSISTANT",
-        origin = ToolCallOrigin.SystemAssistant.name,
-        capabilityKeys = "safe.read",
-        resourceSummary = "generic",
-        runtime = ExecutionRuntime.LOCAL_TOOL,
-        initialStatus = ExecutionStatus.running,
-    )
-
-    private suspend fun insertLearningStreamSentinel() {
-        db.learningOutboxDao().insertIgnore(
-            LearningOutboxEntity(
-                streamId = STREAM_ID,
-                eventId = LEARNING_STREAM_INIT_EVENT_ID,
-                eventType = "STREAM_INIT",
-                eventSchemaVersion = 1,
-                terminalState = null,
-                sourceType = null,
-                sourceId = null,
-                sourceRevision = null,
-                missingRevisionReason = null,
-                scopeKind = null,
-                scopeId = null,
-                conversationId = null,
-                commandId = null,
-                lineageId = null,
-                parentCommandId = null,
-                branchAnchorMessageId = null,
-                generationRunId = null,
-                executionId = null,
-                toolCallId = null,
-                messageId = null,
-                occurredAtMs = null,
-                createdAtMs = 1L,
-            ),
-        )
-    }
 
     private fun row(id: String, status: ExecutionStatus, timestamp: Long) = ExecutionRecord(
         id = id,
@@ -492,4 +279,3 @@ class ExecutionRecordDaoTest {
     )
 }
 
-private const val STREAM_ID = "00000000-0000-0000-0000-000000000010"

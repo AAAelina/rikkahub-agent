@@ -87,12 +87,9 @@ internal fun compileMemoryPrompt(
 ): MemoryPromptCompileResult {
     val recall = compileRecallPrompt(
         memory = memories,
-        policies = emptyList(),
         budget = RecallPromptBudget(
             maxTokens = maxTokens,
             maxChars = maxChars,
-            maxPolicyTokens = 0,
-            maxPolicyItems = 0,
         ),
         requestPurpose = if (includeContextual) {
             RecallRequestPurpose.NORMAL
